@@ -3,6 +3,9 @@
 // 2) Exact 1:1 UV-mapped procedural 3D Three.js meshes & swimming vertex animations
 // 3) Procedural hand-colored crayon demo textures for starter fishes & sample paper scans
 
+import * as SkeletonUtils from '../vendor/SkeletonUtils.js';
+import { CREATURE_OVERRIDES, EXTRA_CUSTOM_SPECIES } from './custom-creatures-config.js';
+
 export const SPECIES_LIST = [
   {
     id: 'clownfish',
@@ -21,6 +24,15 @@ export const SPECIES_LIST = [
     badgeColor: '#00b4d8',
     swimZone: 'mid-high',
     baseScale: 1.12
+  },
+  {
+    id: 'seahorse',
+    name: 'Seahorse',
+    sinhala: 'මුහුදු අශ්වයා (Seahorse)',
+    emoji: '🪸',
+    badgeColor: '#ff9f1c',
+    swimZone: 'mid',
+    baseScale: 1.08
   },
   {
     id: 'turtle',
@@ -48,8 +60,82 @@ export const SPECIES_LIST = [
     badgeColor: '#ffbe0b',
     swimZone: 'reef',
     baseScale: 0.92
-  }
+  },
+  ...(Array.isArray(EXTRA_CUSTOM_SPECIES) ? EXTRA_CUSTOM_SPECIES : [])
 ];
+
+// Runtime caches for optional custom Blender .glb models & 512x512 _template.png sheets
+const cachedCreatureGltfs = new Map();
+const cachedTemplateImages = new Map();
+let preloadPromise = null;
+
+export function getCreatureOverrideConfig(speciesId) {
+  const extra = (EXTRA_CUSTOM_SPECIES || []).find((s) => s.id === speciesId);
+  return extra || CREATURE_OVERRIDES[speciesId] || null;
+}
+
+export function hasCustomTemplate(speciesId) {
+  return cachedTemplateImages.has(speciesId);
+}
+
+export function preloadCustomCreatureAssets(GLTFLoaderClass = null) {
+  if (preloadPromise) return preloadPromise;
+  if (typeof window === 'undefined' || typeof fetch === 'undefined') {
+    return Promise.resolve();
+  }
+
+  const loader = GLTFLoaderClass ? new GLTFLoaderClass() : null;
+  const tasks = [];
+
+  for (const sp of SPECIES_LIST) {
+    const cfg = getCreatureOverrideConfig(sp.id);
+    if (!cfg) continue;
+
+    if (cfg.templateUrl) {
+      tasks.push(
+        fetch(cfg.templateUrl, { method: 'HEAD' })
+          .then((res) => {
+            if (!res.ok) return;
+            return new Promise((resolve) => {
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              img.onload = () => {
+                cachedTemplateImages.set(sp.id, img);
+                resolve();
+              };
+              img.onerror = () => resolve();
+              img.src = cfg.templateUrl;
+            });
+          })
+          .catch(() => {})
+      );
+    }
+
+    if (cfg.glbUrl && loader) {
+      tasks.push(
+        fetch(cfg.glbUrl, { method: 'HEAD' })
+          .then((res) => {
+            if (!res.ok) return;
+            return new Promise((resolve) => {
+              loader.load(
+                cfg.glbUrl,
+                (gltf) => {
+                  cachedCreatureGltfs.set(sp.id, gltf);
+                  resolve();
+                },
+                undefined,
+                () => resolve()
+              );
+            });
+          })
+          .catch(() => {})
+      );
+    }
+  }
+
+  preloadPromise = Promise.all(tasks);
+  return preloadPromise;
+}
 
 export function getSpeciesMeta(speciesId) {
   return SPECIES_LIST.find((s) => s.id === speciesId) || SPECIES_LIST[0];
@@ -138,11 +224,73 @@ function starfishRadius(theta) {
   return 88 + shaped * 118;
 }
 
+// Smooth C1-continuous Seahorse spine + curled spiral tail in 512x512 template space
+function seahorseSpinePoint(t) {
+  if (t <= 0.62) {
+    const u = t / 0.62; // 0 (crown) -> 1 (tail entry at 262, 384)
+    // Smooth S-curve control points
+    const pts = [
+      { x: 244, y: 80, r: 22 },
+      { x: 230, y: 112, r: 37 },
+      { x: 256, y: 162, r: 24 },
+      { x: 222, y: 242, r: 46 },
+      { x: 258, y: 326, r: 30 },
+      { x: 262, y: 384, r: 22 }
+    ];
+    const segF = u * (pts.length - 1);
+    const idx = Math.min(pts.length - 2, Math.floor(segF));
+    const f = segF - idx;
+    const p0 = pts[Math.max(0, idx - 1)];
+    const p1 = pts[idx];
+    const p2 = pts[idx + 1];
+    const p3 = pts[Math.min(pts.length - 1, idx + 2)];
+
+    const catmull = (a, b, c, d, s) =>
+      0.5 *
+      (2 * b +
+        (-a + c) * s +
+        (2 * a - 5 * b + 4 * c - d) * s * s +
+        (-a + 3 * b - 3 * c + d) * s * s * s);
+
+    return {
+      x: catmull(p0.x, p1.x, p2.x, p3.x, f),
+      y: catmull(p0.y, p1.y, p2.y, p3.y, f),
+      r: catmull(p0.r, p1.r, p2.r, p3.r, f)
+    };
+  } else {
+    // Inward-curling prehensile spiral tail from (262, 384) around center (210, 384)
+    const s = (t - 0.62) / 0.38;
+    const spiralR = 52 * (1 - 0.64 * s);
+    const alpha = s * Math.PI * 1.72;
+    return {
+      x: 210 + Math.cos(alpha) * spiralR,
+      y: 384 + Math.sin(alpha) * spiralR,
+      r: 22 * (1 - 0.76 * s)
+    };
+  }
+}
+
 // ============================================================================
 // 2D COLORING TEMPLATE RENDERER (FOR PRINTABLE SHEETS & SILHOUETTE MASKS)
 // ============================================================================
 
 export function drawCreatureSilhouette(ctx, species, size = 512, mode = 'outline') {
+  // If user provided a custom 512x512 _template.png in models/creatures/, use it!
+  const customImg = cachedTemplateImages.get(species);
+  if (customImg) {
+    ctx.save();
+    if (mode === 'mask') {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, size, size);
+    } else {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, size, size);
+      ctx.drawImage(customImg, 0, 0, size, size);
+    }
+    ctx.restore();
+    return;
+  }
+
   // mode: 'mask' (solid white on black/transparent), 'outline' (printable black strokes + inner pattern guides)
   const scale = size / 512;
   ctx.save();
@@ -484,6 +632,130 @@ export function drawCreatureSilhouette(ctx, species, size = 512, mode = 'outline
       ctx.lineWidth = 4.2;
       ctx.stroke();
     }
+  } else if (species === 'seahorse') {
+    // 1. Dorsal fin (back right of torso)
+    ctx.beginPath();
+    ctx.moveTo(264, 198);
+    ctx.bezierCurveTo(334, 200, 344, 236, 326, 250);
+    ctx.bezierCurveTo(346, 266, 330, 298, 258, 292);
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    if (!isMask) {
+      ctx.strokeStyle = '#111827';
+      ctx.lineWidth = 6.5;
+      ctx.stroke();
+      ctx.strokeStyle = '#374151';
+      ctx.lineWidth = 2.6;
+      for (const fy of [218, 236, 254, 272]) {
+        ctx.beginPath();
+        ctx.moveTo(266, fy + (fy - 245) * 0.25);
+        ctx.lineTo(324, fy);
+        ctx.stroke();
+      }
+    }
+
+    // 2. Spiky Coronet Crown on top of head
+    ctx.beginPath();
+    ctx.moveTo(222, 82);
+    ctx.lineTo(226, 48);
+    ctx.lineTo(242, 68);
+    ctx.lineTo(256, 44);
+    ctx.lineTo(264, 68);
+    ctx.lineTo(282, 54);
+    ctx.lineTo(268, 88);
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    if (!isMask) {
+      ctx.strokeStyle = '#111827';
+      ctx.lineWidth = 6.5;
+      ctx.stroke();
+    }
+
+    // 3. Trumpet Snout (facing Left)
+    ctx.beginPath();
+    ctx.moveTo(216, 94);
+    ctx.bezierCurveTo(186, 102, 162, 106, 140, 100);
+    ctx.bezierCurveTo(130, 104, 130, 132, 142, 136);
+    ctx.bezierCurveTo(164, 128, 188, 128, 218, 134);
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+    if (!isMask) {
+      ctx.strokeStyle = '#111827';
+      ctx.lineWidth = 6.5;
+      ctx.stroke();
+    }
+
+    // 4. S-Curved Seahorse Body + Prehensile Spiral Tail Ribbon
+    const N = 90;
+    const leftPts = [];
+    const rightPts = [];
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      const p = seahorseSpinePoint(t);
+      const pNext = seahorseSpinePoint(Math.min(1, t + 0.01));
+      const pPrev = seahorseSpinePoint(Math.max(0, t - 0.01));
+      const dx = pNext.x - pPrev.x;
+      const dy = pNext.y - pPrev.y;
+      const len = Math.hypot(dx, dy) || 1;
+      // Normal vector pointing left vs right of spine tangent
+      const nx = -dy / len;
+      const ny = dx / len;
+      leftPts.push({ x: p.x + nx * p.r, y: p.y + ny * p.r });
+      rightPts.push({ x: p.x - nx * p.r, y: p.y - ny * p.r });
+    }
+
+    ctx.beginPath();
+    // Smooth top-of-head cap
+    const topC = seahorseSpinePoint(0);
+    ctx.moveTo(leftPts[0].x, leftPts[0].y);
+    ctx.quadraticCurveTo(topC.x, topC.y - topC.r * 1.15, rightPts[0].x, rightPts[0].y);
+    for (let i = 1; i <= N; i++) {
+      ctx.lineTo(rightPts[i].x, rightPts[i].y);
+    }
+    const tipC = seahorseSpinePoint(1);
+    ctx.quadraticCurveTo(tipC.x, tipC.y, leftPts[N].x, leftPts[N].y);
+    for (let i = N - 1; i >= 0; i--) {
+      ctx.lineTo(leftPts[i].x, leftPts[i].y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#ffffff';
+    ctx.fill();
+
+    if (!isMask) {
+      ctx.strokeStyle = '#111827';
+      ctx.lineWidth = 7;
+      ctx.stroke();
+
+      // Cute armored belly ridge rings for kids to color like rainbow stripes!
+      ctx.strokeStyle = '#374151';
+      ctx.lineWidth = 2.8;
+      for (let i = 16; i <= 82; i += 6) {
+        ctx.beginPath();
+        ctx.moveTo(leftPts[i].x, leftPts[i].y);
+        ctx.quadraticCurveTo(
+          (leftPts[i].x + rightPts[i].x) * 0.5,
+          (leftPts[i].y + rightPts[i].y) * 0.5 + 5,
+          rightPts[i].x,
+          rightPts[i].y
+        );
+        ctx.stroke();
+      }
+
+      // Cheek gill swirl
+      ctx.beginPath();
+      ctx.arc(248, 118, 12, -0.6, Math.PI * 0.85);
+      ctx.stroke();
+
+      drawCuteEye(ctx, 214, 108, 13.5);
+    }
+  } else {
+    // Fallback outline for custom EXTRA_CUSTOM_SPECIES before a _template.png is dropped in
+    ctx.restore();
+    drawCreatureSilhouette(ctx, 'clownfish', size, mode);
+    return;
   }
 
   ctx.restore();
@@ -513,11 +785,13 @@ function drawCuteEye(ctx, x, y, r) {
 
 // Re-draw just the clean cute eyes on top of scanned textures if desired
 export function drawEyeOverlayOnly(ctx, species, size = 512) {
+  if (hasCustomTemplate(species)) return;
   const s = size / 512;
   ctx.save();
   ctx.scale(s, s);
   if (species === 'clownfish') drawCuteEye(ctx, 114, 226, 17);
   else if (species === 'angelfish') drawCuteEye(ctx, 118, 232, 16);
+  else if (species === 'seahorse') drawCuteEye(ctx, 214, 108, 13.5);
   else if (species === 'turtle') {
     drawCuteEye(ctx, 232, 76, 9);
     drawCuteEye(ctx, 280, 76, 9);
@@ -532,10 +806,117 @@ export function drawEyeOverlayOnly(ctx, species, size = 512) {
 }
 
 // ============================================================================
+// CUSTOM BLENDER .GLB CREATURE BUILDER (SUPPORTS RIGGED OR STATIC .GLB)
+// ============================================================================
+
+export function buildCustomGlbCreatureMesh(THREE, gltf, species, texture, overrideCfg = {}) {
+  const group = new THREE.Group();
+  group.userData.species = species;
+  group.userData.isCustomGlb = true;
+  group.userData.animParts = { waveMeshes: [] };
+
+  // glTF 2.0 UV convention expects flipY = false so top-left (0,0) of the 512x512
+  // paper coloring sheet maps right-side-up onto Blender's UV [0..1, 0..1] space!
+  const gltfTex = texture.clone();
+  gltfTex.flipY = false;
+  gltfTex.colorSpace = THREE.SRGBColorSpace;
+  gltfTex.needsUpdate = true;
+
+  const clonedRoot = SkeletonUtils.clone(gltf.scene);
+
+  // Normalize bounding box size & center, then orient local forward to +X
+  const rawBox = new THREE.Box3().setFromObject(clonedRoot);
+  const rawSize = new THREE.Vector3();
+  const rawCenter = new THREE.Vector3();
+  rawBox.getSize(rawSize);
+  rawBox.getCenter(rawCenter);
+
+  const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z, 0.001);
+  const targetSize = overrideCfg.targetSize || 2.5;
+  const normScale = targetSize / maxDim;
+
+  const orientPivot = new THREE.Group();
+  clonedRoot.position.sub(rawCenter);
+  clonedRoot.scale.multiplyScalar(normScale);
+  orientPivot.add(clonedRoot);
+
+  const rotY = ((overrideCfg.facingOffsetDegY ?? 180) * Math.PI) / 180;
+  const rotX = ((overrideCfg.tiltOffsetDegX ?? 0) * Math.PI) / 180;
+  orientPivot.rotation.set(rotX, rotY, 0);
+  group.add(orientPivot);
+
+  const hasClips = Array.isArray(gltf.animations) && gltf.animations.length > 0;
+  const useAutoWave = !hasClips && overrideCfg.autoSwimWave !== false;
+
+  const isJelly = species === 'jellyfish';
+  const scannedMat = new THREE.MeshStandardMaterial({
+    map: gltfTex,
+    roughness: isJelly ? 0.25 : 0.48,
+    metalness: 0.04,
+    emissive: isJelly ? new THREE.Color(0x3a1860) : new THREE.Color(0x091826),
+    emissiveMap: gltfTex,
+    emissiveIntensity: isJelly ? 0.34 : 0.14,
+    transparent: isJelly,
+    opacity: isJelly ? 0.93 : 1.0,
+    side: THREE.DoubleSide
+  });
+
+  clonedRoot.traverse((child) => {
+    if (!child.isMesh) return;
+    // Clone geometry if we plan to apply procedural vertex wave so instances stay independent
+    if (useAutoWave && !child.isSkinnedMesh && child.geometry?.attributes?.position) {
+      child.geometry = child.geometry.clone();
+      const posAttr = child.geometry.attributes.position;
+      const gBox = new THREE.Box3().setFromBufferAttribute(posAttr);
+      const span = Math.max(gBox.max.x - gBox.min.x, gBox.max.y - gBox.min.y, gBox.max.z - gBox.min.z, 0.001);
+      const base = new Float32Array(posAttr.count * 4);
+      for (let i = 0; i < posAttr.count; i++) {
+        const vx = posAttr.getX(i);
+        const vy = posAttr.getY(i);
+        const vz = posAttr.getZ(i);
+        base[i * 4] = vx;
+        base[i * 4 + 1] = vy;
+        base[i * 4 + 2] = vz;
+        // Normalized longitudinal coordinate for gentle swim undulation
+        base[i * 4 + 3] = Math.hypot(vx, vy) / span;
+      }
+      child.geometry.userData.basePositions = base;
+      child.geometry.userData.waveAmp = span * 0.075;
+      group.userData.animParts.waveMeshes.push(child);
+    }
+
+    // Preserve materials explicitly named "Keep*" or "Eye*" or "Glass*"; apply scanned paper UV map to everything else
+    const matName = child.material?.name || '';
+    if (!/^(keep|eye|glass)/i.test(matName)) {
+      child.material = scannedMat;
+    }
+    child.castShadow = true;
+  });
+
+  if (hasClips) {
+    const mixer = new THREE.AnimationMixer(clonedRoot);
+    for (const clip of gltf.animations) {
+      mixer.clipAction(clip).play();
+    }
+    group.userData.mixer = mixer;
+    group.userData.lastAnimTime = null;
+  }
+
+  return group;
+}
+
+// ============================================================================
 // 3D PROCEDURAL MESH BUILDER WITH EXACT 1:1 TEMPLATE UV PROJECTION
 // ============================================================================
 
 export function buildCreatureMesh(THREE, species, texture) {
+  // 1. Check if user dropped a custom Blender .glb model for this species!
+  const customGltf = cachedCreatureGltfs.get(species);
+  if (customGltf) {
+    const cfg = getCreatureOverrideConfig(species) || {};
+    return buildCustomGlbCreatureMesh(THREE, customGltf, species, texture, cfg);
+  }
+
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.needsUpdate = true;
 
@@ -634,6 +1015,20 @@ export function buildCreatureMesh(THREE, species, texture) {
     const starMesh = new THREE.Mesh(starGeom, mat);
     group.add(starMesh);
     group.userData.animParts = { starMesh };
+  } else if (species === 'seahorse') {
+    const { bodyMesh, snoutMesh, crownMesh, dorsalPivot } = buildSeahorseParts(THREE, mat);
+    group.add(bodyMesh, snoutMesh, crownMesh, dorsalPivot);
+    group.userData.animParts = { bodyMesh, dorsalPivot };
+  } else {
+    // Fallback procedural 3D mesh for custom species before a .glb is uploaded
+    const bodyGeom = buildLoftedProfileGeometry(THREE, clownfishProfile, 60, 466, {
+      nu: 54,
+      nv: 26,
+      maxThick: 0.32
+    });
+    const bodyMesh = new THREE.Mesh(bodyGeom, mat);
+    group.add(bodyMesh);
+    group.userData.animParts.spineMesh = bodyMesh;
   }
 
   return group;
@@ -1022,11 +1417,230 @@ function buildStarfishGeometry(THREE) {
   return geom;
 }
 
+// 3D Sculpted Upright Seahorse (S-Curved Tubular Body + Spiral Tail + Trumpet Snout + Crown + Fluttering Dorsal Fin)
+function buildSeahorseParts(THREE, mat) {
+  const scale = 1 / 145;
+  const cx = 232;
+  const cy = 248;
+
+  // 1. S-Curved Tubular Body + Prehensile Spiral Tail mapped 1:1 from seahorseSpinePoint(t)
+  const nSpine = 72;
+  const nRing = 18;
+  const positions = [];
+  const basePositions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let i = 0; i <= nSpine; i++) {
+    const t = i / nSpine;
+    const p = seahorseSpinePoint(t);
+    const pNext = seahorseSpinePoint(Math.min(1, t + 0.01));
+    const pPrev = seahorseSpinePoint(Math.max(0, t - 0.01));
+    const dx = pNext.x - pPrev.x;
+    const dy = pNext.y - pPrev.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+
+    // Armored seahorse ridge ring modulation!
+    const ridgeBump = t > 0.16 && t < 0.92 ? 1 + Math.sin(t * Math.PI * 30) * 0.055 : 1;
+
+    for (let j = 0; j <= nRing; j++) {
+      const phi = (j / nRing) * Math.PI * 2;
+      // cos(phi) spans +1 (left/belly side) to -1 (right/back side) in 2D template!
+      const sideCos = Math.cos(phi);
+      const depthSin = Math.sin(phi);
+
+      const tx = p.x + nx * p.r * sideCos;
+      const ty = p.y + ny * p.r * sideCos;
+
+      const px = (cx - tx) * scale * ridgeBump;
+      const py = (cy - ty) * scale * ridgeBump;
+      const pz = depthSin * (p.r * scale * 0.78) * ridgeBump;
+
+      positions.push(px, py, pz);
+      basePositions.push(px, py, pz, t);
+      uvs.push(tx / 512, 1 - ty / 512);
+    }
+  }
+
+  const cols = nRing + 1;
+  for (let i = 0; i < nSpine; i++) {
+    for (let j = 0; j < nRing; j++) {
+      const a = i * cols + j;
+      const b = (i + 1) * cols + j;
+      const c = (i + 1) * cols + (j + 1);
+      const d = i * cols + (j + 1);
+      indices.push(a, b, d, b, c, d);
+    }
+  }
+
+  const bodyGeom = new THREE.BufferGeometry();
+  bodyGeom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  bodyGeom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  bodyGeom.setIndex(indices);
+  bodyGeom.computeVertexNormals();
+  bodyGeom.userData.basePositions = new Float32Array(basePositions);
+  const bodyMesh = new THREE.Mesh(bodyGeom, mat);
+  bodyMesh.castShadow = true;
+
+  // 2. 3D Tubular Trumpet Snout (tx: 218 -> 134, ty around 116)
+  const snoutPos = [];
+  const snoutUvs = [];
+  const snoutIdx = [];
+  const nSnout = 12;
+  for (let i = 0; i <= nSnout; i++) {
+    const u = i / nSnout; // 0 at head (tx=218) -> 1 at snout tip (tx=134)
+    const txCenter = 218 - u * 84;
+    const tyCenter = 114 + Math.sin(u * Math.PI) * 3;
+    // Slight trumpet flare right at the tip (u > 0.78)
+    const radPx = u < 0.78 ? 18 * (1 - u * 0.38) : 11.2 + ((u - 0.78) / 0.22) * 6.5;
+
+    for (let j = 0; j <= nRing; j++) {
+      const phi = (j / nRing) * Math.PI * 2;
+      const ty = tyCenter + Math.cos(phi) * radPx;
+      const px = (cx - txCenter) * scale;
+      const py = (cy - ty) * scale;
+      const pz = Math.sin(phi) * radPx * scale * 0.85;
+      snoutPos.push(px, py, pz);
+      snoutUvs.push(txCenter / 512, 1 - ty / 512);
+    }
+  }
+  for (let i = 0; i < nSnout; i++) {
+    for (let j = 0; j < nRing; j++) {
+      const a = i * cols + j;
+      const b = (i + 1) * cols + j;
+      const c = (i + 1) * cols + (j + 1);
+      const d = i * cols + (j + 1);
+      snoutIdx.push(a, d, b, b, d, c);
+    }
+  }
+  const snoutGeom = new THREE.BufferGeometry();
+  snoutGeom.setAttribute('position', new THREE.Float32BufferAttribute(snoutPos, 3));
+  snoutGeom.setAttribute('uv', new THREE.Float32BufferAttribute(snoutUvs, 2));
+  snoutGeom.setIndex(snoutIdx);
+  snoutGeom.computeVertexNormals();
+  const snoutMesh = new THREE.Mesh(snoutGeom, mat);
+
+  // 3. 3D Coronet Crown on Head (tx: 222..282, ty: 44..88)
+  const crownPos = [];
+  const crownUvs = [];
+  const crownIdx = [];
+  const nCx = 12;
+  const nCy = 6;
+  const addCrownSide = (zSign) => {
+    const off = crownPos.length / 3;
+    for (let iy = 0; iy <= nCy; iy++) {
+      const v = iy / nCy; // 0 = base (ty=86), 1 = spiky tips
+      for (let ix = 0; ix <= nCx; ix++) {
+        const u = ix / nCx;
+        const tx = 222 + u * 58;
+        const spike = Math.abs(Math.sin(u * Math.PI * 3));
+        const tyTop = 68 - spike * 22;
+        const ty = 86 + (tyTop - 86) * v;
+        const thick = zSign * 0.045 * (1 - v * 0.75) * Math.sin(u * Math.PI);
+        crownPos.push((cx - tx) * scale, (cy - ty) * scale, thick);
+        crownUvs.push(tx / 512, 1 - ty / 512);
+      }
+    }
+    const cCols = nCx + 1;
+    for (let iy = 0; iy < nCy; iy++) {
+      for (let ix = 0; ix < nCx; ix++) {
+        const a = off + iy * cCols + ix;
+        const b = off + (iy + 1) * cCols + ix;
+        const c = off + (iy + 1) * cCols + (ix + 1);
+        const d = off + iy * cCols + (ix + 1);
+        if (zSign > 0) crownIdx.push(a, b, d, b, c, d);
+        else crownIdx.push(a, d, b, b, d, c);
+      }
+    }
+  };
+  addCrownSide(1);
+  addCrownSide(-1);
+  const crownGeom = new THREE.BufferGeometry();
+  crownGeom.setAttribute('position', new THREE.Float32BufferAttribute(crownPos, 3));
+  crownGeom.setAttribute('uv', new THREE.Float32BufferAttribute(crownUvs, 2));
+  crownGeom.setIndex(crownIdx);
+  crownGeom.computeVertexNormals();
+  const crownMesh = new THREE.Mesh(crownGeom, mat);
+
+  // 4. Articulated Fluttering 3D Dorsal Fin on Back (tx: 262..338, ty: 198..294)
+  const dorsalPivot = new THREE.Group();
+  const pivX = (cx - 262) * scale;
+  const pivY = (cy - 246) * scale;
+  dorsalPivot.position.set(pivX, pivY, 0);
+
+  const finPos = [];
+  const finUvs = [];
+  const finIdx = [];
+  const nFu = 8;
+  const nFv = 10;
+  for (let iv = 0; iv <= nFv; iv++) {
+    const v = iv / nFv; // 0 = top (ty=198) -> 1 = bottom (ty=294)
+    const tyBase = 204 + v * 84;
+    const lobe = 1 - 0.22 * Math.pow(Math.sin(v * Math.PI * 2), 2);
+    const spanPx = 70 * Math.sin(v * Math.PI * 0.92 + 0.12) * lobe;
+    for (let iu = 0; iu <= nFu; iu++) {
+      const u = iu / nFu;
+      const tx = 262 + u * spanPx;
+      const ty = tyBase + (v - 0.5) * u * 18;
+      finPos.push((cx - tx) * scale - pivX, (cy - ty) * scale - pivY, 0);
+      finUvs.push(tx / 512, 1 - ty / 512);
+    }
+  }
+  for (let iv = 0; iv < nFv; iv++) {
+    for (let iu = 0; iu < nFu; iu++) {
+      const a = iv * (nFu + 1) + iu;
+      const b = (iv + 1) * (nFu + 1) + iu;
+      const c = (iv + 1) * (nFu + 1) + (iu + 1);
+      const d = iv * (nFu + 1) + (iu + 1);
+      finIdx.push(a, b, d, b, c, d);
+    }
+  }
+  const finGeom = new THREE.BufferGeometry();
+  finGeom.setAttribute('position', new THREE.Float32BufferAttribute(finPos, 3));
+  finGeom.setAttribute('uv', new THREE.Float32BufferAttribute(finUvs, 2));
+  finGeom.setIndex(finIdx);
+  finGeom.computeVertexNormals();
+  const finMesh = new THREE.Mesh(finGeom, mat);
+  dorsalPivot.add(finMesh);
+
+  return { bodyMesh, snoutMesh, crownMesh, dorsalPivot };
+}
+
 // ============================================================================
 // REALTIME 3D VERTEX & LIMB SWIMMING ANIMATION
 // ============================================================================
 
 export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
+  // 1. Custom Blender .GLB creature animation (skeletal AnimationMixer or gentle procedural wave)
+  if (meshGroup.userData.isCustomGlb) {
+    if (meshGroup.userData.mixer) {
+      const last = meshGroup.userData.lastAnimTime;
+      const dt = last === null ? 0.016 : Math.min(Math.max(time - last, 0), 0.1);
+      meshGroup.userData.lastAnimTime = time;
+      meshGroup.userData.mixer.update(dt * speedBoost);
+    }
+    const waveMeshes = meshGroup.userData.animParts?.waveMeshes;
+    if (waveMeshes && waveMeshes.length > 0) {
+      for (const m of waveMeshes) {
+        const base = m.geometry.userData.basePositions;
+        const amp = m.geometry.userData.waveAmp || 0.08;
+        const pos = m.geometry.attributes.position;
+        const arr = pos.array;
+        for (let i = 0, k = 0; i < base.length; i += 4, k += 3) {
+          const u = base[i + 3];
+          const w = Math.sin(time * 4.8 * speedBoost - u * 4.0) * amp * u;
+          arr[k] = base[i];
+          arr[k + 1] = base[i + 1];
+          arr[k + 2] = base[i + 2] + w;
+        }
+        pos.needsUpdate = true;
+      }
+    }
+    return;
+  }
+
   const species = meshGroup.userData.species;
   const parts = meshGroup.userData.animParts || {};
 
@@ -1130,6 +1744,41 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
       }
       pos.needsUpdate = true;
     }
+  } else if (species === 'seahorse') {
+    // Rapid fluttering dorsal fin + gentle S-spine & spiral tail curl!
+    if (parts.dorsalPivot) {
+      parts.dorsalPivot.rotation.y = Math.sin(time * 16.0 * speedBoost) * 0.36;
+    }
+    if (parts.bodyMesh && parts.bodyMesh.geometry.userData.basePositions) {
+      const base = parts.bodyMesh.geometry.userData.basePositions;
+      const pos = parts.bodyMesh.geometry.attributes.position;
+      const arr = pos.array;
+      for (let i = 0, k = 0; i < base.length; i += 4, k += 3) {
+        const bx = base[i];
+        const by = base[i + 1];
+        const bz = base[i + 2];
+        const t = base[i + 3];
+        const tailFlex = Math.pow(t, 1.5);
+        const swayZ = Math.sin(time * 3.8 * speedBoost - t * 3.8) * 0.16 * tailFlex;
+        const curlX = Math.cos(time * 2.4 - t * 2.6) * 0.07 * Math.max(0, t - 0.55);
+        arr[k] = bx + curlX;
+        arr[k + 1] = by;
+        arr[k + 2] = bz + swayZ;
+      }
+      pos.needsUpdate = true;
+    }
+  } else if (parts.spineMesh && parts.spineMesh.geometry.userData.basePositions) {
+    // Fallback custom species swim wave
+    const base = parts.spineMesh.geometry.userData.basePositions;
+    const pos = parts.spineMesh.geometry.attributes.position;
+    const arr = pos.array;
+    for (let i = 0, k = 0; i < base.length; i += 4, k += 3) {
+      const uNorm = base[i + 3];
+      arr[k] = base[i];
+      arr[k + 1] = base[i + 1];
+      arr[k + 2] = base[i + 2] + Math.sin(time * 6.5 * speedBoost - uNorm * 4.4) * 0.25 * Math.pow(uNorm, 1.6);
+    }
+    pos.needsUpdate = true;
   }
 }
 
@@ -1213,6 +1862,22 @@ export function generateHandColoredCanvas(species, palette, includePaperSheet = 
     sg.addColorStop(1, palette[1] || '#ef476f');
     pctx.fillStyle = sg;
     pctx.fillRect(0, 0, 512, 512);
+  } else if (species === 'seahorse') {
+    // Golden-coral gradient body + vibrant cyan/magenta dorsal fin & crown!
+    const shg = pctx.createLinearGradient(180, 50, 280, 445);
+    shg.addColorStop(0, palette[0] || '#ff9f1c');
+    shg.addColorStop(0.5, palette[1] || '#ff5d8f');
+    shg.addColorStop(1, palette[2] || '#ffd166');
+    pctx.fillStyle = shg;
+    pctx.fillRect(0, 0, 512, 512);
+    // Bright dorsal fin & crown highlight
+    pctx.fillStyle = palette[3] || '#00f5d4';
+    pctx.beginPath();
+    pctx.ellipse(302, 246, 46, 56, 0, 0, Math.PI * 2);
+    pctx.fill();
+    pctx.beginPath();
+    pctx.ellipse(252, 64, 38, 24, 0, 0, Math.PI * 2);
+    pctx.fill();
   }
 
   // Add realistic crayon grain texture!

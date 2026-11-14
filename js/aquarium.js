@@ -1,14 +1,22 @@
 import * as THREE from 'three';
 import { OrbitControls } from '../vendor/OrbitControls.js';
+import { GLTFLoader } from '../vendor/GLTFLoader.js';
 import {
   SPECIES_LIST,
   getSpeciesMeta,
   buildCreatureMesh,
   animateCreatureMesh,
-  generateHandColoredCanvas
+  generateHandColoredCanvas,
+  preloadCustomCreatureAssets
 } from './creatures.js';
-import { fetchInitialFishes, initLiveChannel } from './supabase-api.js';
+import {
+  fetchInitialFishes,
+  initLiveChannel,
+  resetAllFishesInSupabase,
+  deleteSingleFishInSupabase
+} from './supabase-api.js';
 import { makeQrPngDataUrl } from './qr.js';
+import { ENVIRONMENT_CONFIG } from './environment-config.js';
 
 // ============================================================================
 // WEB AUDIO SYNTHESIZER (SPLASH, BUBBLES, CHIME, SHARK THEME - ZERO EXTERNAL MP3S)
@@ -120,7 +128,8 @@ const STARTER_FISH_SPECS = [
   { id: 'demo-2', name: 'Nethmi', species: 'turtle', palette: ['#2ec4b6', '#52b788', '#ffd166', '#cbf3f0'], isDemo: true },
   { id: 'demo-3', name: 'Kavindu', species: 'angelfish', palette: ['#00bbf9', '#fee440', '#9b5de5', '#ffffff'], isDemo: true },
   { id: 'demo-4', name: 'Hiruni', species: 'jellyfish', palette: ['#f72585', '#b5179e', '#4cc9f0', '#fff3b0'], isDemo: true },
-  { id: 'demo-5', name: 'Sahan', species: 'starfish', palette: ['#ffbe0b', '#fb5607', '#ff006e', '#fff8d6'], isDemo: true }
+  { id: 'demo-5', name: 'Sahan', species: 'starfish', palette: ['#ffbe0b', '#fb5607', '#ff006e', '#fff8d6'], isDemo: true },
+  { id: 'demo-6', name: 'Amaya', species: 'seahorse', palette: ['#ff9f1c', '#ff5d8f', '#ffd166', '#00f5d4'], isDemo: true }
 ];
 
 class DigitalAquariumApp {
@@ -132,8 +141,12 @@ class DigitalAquariumApp {
     this.splashBursts = [];
     this.kelpBlades = [];
     this.godRays = [];
+    this.gltfLoader = new GLTFLoader();
+    this.gltfMixers = [];
+    this.customEnvGroup = null;
     this.showLabels = true;
-    this.showDemoFish = true;
+    this.showDemoFish = localStorage.getItem('aquarium_show_demo') !== '0';
+    this.inspectedActorId = null;
     this.sharkActor = null;
     this.clock = new THREE.Clock();
     this.raycaster = new THREE.Raycaster();
@@ -141,6 +154,7 @@ class DigitalAquariumApp {
 
     this.initScene();
     this.buildEnvironment();
+    this.loadCustomModelsFromConfig();
     this.initUI();
     this.loadInitialFishes();
     this.connectRealtime();
@@ -279,6 +293,8 @@ class DigitalAquariumApp {
     });
     const seabed = new THREE.Mesh(floorGeom, floorMat);
     seabed.position.y = -5.6;
+    seabed.visible = ENVIRONMENT_CONFIG.showBuiltInSandFloor !== false;
+    this.defaultSandFloor = seabed;
     this.scene.add(seabed);
 
     // 4. Volumetric Sunlight God Rays
@@ -347,6 +363,10 @@ class DigitalAquariumApp {
   }
 
   buildCoralReefs() {
+    this.defaultReefGroup = new THREE.Group();
+    this.defaultReefGroup.visible = ENVIRONMENT_CONFIG.showBuiltInRocksAndCorals !== false;
+    this.scene.add(this.defaultReefGroup);
+
     const rockMat = new THREE.MeshStandardMaterial({ color: 0x334e68, roughness: 0.92, flatShading: true });
     const coralPalette = [0xff5d8f, 0xff85a1, 0xff9e00, 0x00f5d4, 0x9b5de5, 0xf15bb5, 0xfee440];
 
@@ -406,10 +426,14 @@ class DigitalAquariumApp {
         cluster.add(cyl);
       }
 
-      this.scene.add(cluster);
+      this.defaultReefGroup.add(cluster);
     });
 
     // Swaying Kelp Seaweed Forest
+    this.defaultKelpGroup = new THREE.Group();
+    this.defaultKelpGroup.visible = ENVIRONMENT_CONFIG.showBuiltInKelpPlants !== false;
+    this.scene.add(this.defaultKelpGroup);
+
     const kelpMat = new THREE.MeshStandardMaterial({
       color: 0x2ec4b6,
       emissive: 0x0b525b,
@@ -432,10 +456,120 @@ class DigitalAquariumApp {
         const mesh = new THREE.Mesh(geom, kelpMat);
         mesh.position.set(kx + (strand - 1) * 0.4, -5.6, kz + (strand % 2) * 0.35);
         mesh.rotation.y = strand * 0.8;
-        this.scene.add(mesh);
+        this.defaultKelpGroup.add(mesh);
         this.kelpBlades.push({ mesh, base, height, phase: idx + strand * 1.3 });
       }
     });
+  }
+
+  // ==========================================================================
+  // CUSTOM 3D .GLB TANK ENVIRONMENT & PROPS LOADER (BLENDER / MAYA / C4D)
+  // ==========================================================================
+
+  async loadCustomModelsFromConfig() {
+    this.customEnvGroup = new THREE.Group();
+    this.scene.add(this.customEnvGroup);
+
+    const fsCfg = ENVIRONMENT_CONFIG.fullScene;
+    if (fsCfg && fsCfg.enabled && fsCfg.url) {
+      try {
+        const headRes = await fetch(fsCfg.url, { method: 'HEAD' });
+        if (headRes.ok) {
+          this.loadGlbIntoTank(fsCfg.url, fsCfg);
+        }
+      } catch (_) {}
+    }
+
+    if (Array.isArray(ENVIRONMENT_CONFIG.props)) {
+      for (const prop of ENVIRONMENT_CONFIG.props) {
+        if (!prop?.url) continue;
+        this.gltfLoader.load(
+          prop.url,
+          (gltf) => {
+            const root = gltf.scene;
+            const pos = prop.position || [0, -5.5, -2];
+            root.position.set(pos[0], pos[1], pos[2]);
+            root.scale.setScalar(prop.scale ?? 1.0);
+            root.rotation.y = prop.rotationY ?? 0;
+            this.customEnvGroup.add(root);
+            this.registerGltfAnimations(gltf);
+          },
+          undefined,
+          (err) => console.warn('Failed to load custom prop:', prop.url, err)
+        );
+      }
+    }
+  }
+
+  loadGlbIntoTank(urlOrBlobUrl, cfg = {}) {
+    this.gltfLoader.load(
+      urlOrBlobUrl,
+      (gltf) => {
+        // Clear previous custom full scene if previewing another .glb
+        while (this.customEnvGroup.children.length > 0) {
+          this.customEnvGroup.remove(this.customEnvGroup.children[0]);
+        }
+        this.gltfMixers = [];
+
+        const model = gltf.scene;
+
+        if (cfg.autoFitToTank !== false) {
+          const box = new THREE.Box3().setFromObject(model);
+          const size = new THREE.Vector3();
+          const center = new THREE.Vector3();
+          box.getSize(size);
+          box.getCenter(center);
+
+          const maxHoriz = Math.max(size.x, size.z, 0.001);
+          const targetW = cfg.targetWidth || 28.0;
+          const fitScale = (targetW / maxHoriz) * (cfg.scale || 1.0);
+          model.scale.setScalar(fitScale);
+
+          const scaledBox = new THREE.Box3().setFromObject(model);
+          const scaledCenter = new THREE.Vector3();
+          scaledBox.getCenter(scaledCenter);
+
+          const floorY = cfg.floorY ?? -5.8;
+          const offsetZ = cfg.offsetZ ?? -1.2;
+          model.position.set(
+            -scaledCenter.x,
+            floorY - scaledBox.min.y,
+            -scaledCenter.z + offsetZ
+          );
+        } else {
+          const p = cfg.position || [0, -5.6, -1.2];
+          model.position.set(p[0], p[1], p[2]);
+          model.scale.setScalar(cfg.scale || 1.0);
+          model.rotation.y = cfg.rotationY || 0;
+        }
+
+        this.customEnvGroup.add(model);
+        this.registerGltfAnimations(gltf);
+
+        if (cfg.replaceDefaultRocksAndPlants !== false) {
+          if (this.defaultReefGroup) this.defaultReefGroup.visible = false;
+          if (this.defaultKelpGroup) this.defaultKelpGroup.visible = false;
+        }
+        if (cfg.replaceDefaultSandFloor) {
+          if (this.defaultSandFloor) this.defaultSandFloor.visible = false;
+        }
+      },
+      undefined,
+      (err) => {
+        console.warn('GLB load failed:', err);
+        alert('3D .glb file එක load කරන්න බැරි වුණා. Blender වලින් glTF Binary (.glb) විදියට export කරලා බලන්න.');
+      }
+    );
+  }
+
+  registerGltfAnimations(gltf) {
+    if (gltf.animations && gltf.animations.length > 0) {
+      const mixer = new THREE.AnimationMixer(gltf.scene);
+      for (const clip of gltf.animations) {
+        mixer.clipAction(clip).play();
+      }
+      this.gltfMixers.push(mixer);
+    }
   }
 
   buildAmbientBubbles() {
@@ -476,6 +610,9 @@ class DigitalAquariumApp {
   // ==========================================================================
 
   async loadInitialFishes() {
+    // Preload any custom Blender .glb / _template.png creature overrides first
+    await preloadCustomCreatureAssets(GLTFLoader);
+
     // Spawn starter demo fishes first so tank is immediately vibrant
     this.syncDemoFishes();
 
@@ -550,7 +687,7 @@ class DigitalAquariumApp {
 
     // Create floating Artist Name Badge Sprite
     const labelSprite = this.createNameBadgeSprite(`${meta.emoji} ${name}`, isDemo);
-    labelSprite.position.set(0, species === 'jellyfish' ? 1.32 : 1.08, 0);
+    labelSprite.position.set(0, species === 'seahorse' ? 1.52 : species === 'jellyfish' ? 1.32 : 1.08, 0);
     labelSprite.visible = this.showLabels;
 
     const root = new THREE.Group();
@@ -814,15 +951,32 @@ class DigitalAquariumApp {
 
   showCreatureSpotlightModal(actor) {
     this.audio.playPop();
+    this.inspectedActorId = actor.id;
     const meta = getSpeciesMeta(actor.species);
     const modal = document.getElementById('fish-inspect-card');
     if (!modal) return;
     document.getElementById('inspect-img').src = actor.previewUrl;
     document.getElementById('inspect-title').textContent = `${meta.emoji} ${actor.name}'s ${meta.name}`;
     document.getElementById('inspect-sub').textContent = actor.isDemo
-      ? 'Starter Demo Creature • Scan a sheet to add yours!'
+      ? 'Starter Demo Creature • Toggle "Demo Fish" on top bar to hide'
       : `Scanned & Colored Paper Sheet • ${new Date(actor.createdAt).toLocaleTimeString()}`;
+
+    const delBtn = document.getElementById('btn-delete-single-fish');
+    if (delBtn) delBtn.classList.toggle('hidden', !!actor.isDemo);
     modal.classList.remove('hidden');
+  }
+
+  clearAllUserFishesLocally(hideDemo = false) {
+    for (const [id, actor] of [...this.creatures.entries()]) {
+      if (!actor.isDemo) this.removeCreature(id);
+    }
+    if (hideDemo) {
+      this.showDemoFish = false;
+      localStorage.setItem('aquarium_show_demo', '0');
+      this.syncDemoFishes();
+      document.getElementById('btn-demo-toggle')?.classList.remove('active-pill');
+    }
+    this.updateFishCounter();
   }
 
   // ==========================================================================
@@ -834,6 +988,13 @@ class DigitalAquariumApp {
     initLiveChannel({
       onFishAdded: (fish) => {
         if (fish) this.spawnCreatureFromRecord(fish, true);
+      },
+      onFishDeleted: (fishId) => {
+        this.removeCreature(fishId);
+        this.updateFishCounter();
+      },
+      onTankCleared: (payload) => {
+        this.clearAllUserFishesLocally(!!payload?.hideDemo);
       },
       onTankEvent: (payload) => {
         if (payload?.action === 'shark') this.triggerSharkVisit();
@@ -858,6 +1019,8 @@ class DigitalAquariumApp {
     const urlLabel = document.getElementById('scan-url-text');
     if (urlLabel) urlLabel.textContent = scanUrl.replace(/^https?:\/\//, '');
 
+    document.getElementById('btn-demo-toggle')?.classList.toggle('active-pill', this.showDemoFish);
+
     document.getElementById('btn-feed')?.addEventListener('click', () => {
       this.dropFoodAtWorld((Math.random() - 0.5) * 6, 4.4, 0.8);
     });
@@ -876,8 +1039,52 @@ class DigitalAquariumApp {
 
     document.getElementById('btn-demo-toggle')?.addEventListener('click', (e) => {
       this.showDemoFish = !this.showDemoFish;
+      localStorage.setItem('aquarium_show_demo', this.showDemoFish ? '1' : '0');
       this.syncDemoFishes();
       e.currentTarget.classList.toggle('active-pill', this.showDemoFish);
+    });
+
+    // Reset Tank Modal & PIN-Protected Clear All
+    const resetModal = document.getElementById('reset-tank-modal');
+    document.getElementById('btn-reset-tank')?.addEventListener('click', () => {
+      resetModal?.classList.remove('hidden');
+      document.getElementById('reset-pin-input')?.focus();
+    });
+    document.getElementById('btn-cancel-reset')?.addEventListener('click', () => {
+      resetModal?.classList.add('hidden');
+    });
+    document.getElementById('btn-confirm-reset')?.addEventListener('click', async (e) => {
+      const btn = e.currentTarget;
+      const pin = document.getElementById('reset-pin-input')?.value || '';
+      const hideDemo = !!document.getElementById('chk-reset-hide-demo')?.checked;
+      btn.disabled = true;
+      btn.textContent = '⏳ ඉවත් කරමින්...';
+      try {
+        await resetAllFishesInSupabase(pin, hideDemo);
+        this.clearAllUserFishesLocally(hideDemo);
+        resetModal?.classList.add('hidden');
+        document.getElementById('reset-pin-input').value = '';
+      } catch (err) {
+        alert('PIN අංකය වැරදියි හෝ Reset කළ නොහැක (Default PIN: 1234)');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🧹 ඔක්කොම මාළු ඉවත් කරන්න';
+      }
+    });
+
+    // Delete a single scanned fish from spotlight card
+    document.getElementById('btn-delete-single-fish')?.addEventListener('click', async () => {
+      if (!this.inspectedActorId) return;
+      const pin = prompt('මේ මාළුවා අයින් කරන්න Admin PIN එක ගහන්න (Default: 1234):', '');
+      if (!pin) return;
+      try {
+        await deleteSingleFishInSupabase(this.inspectedActorId, pin);
+        this.removeCreature(this.inspectedActorId);
+        this.updateFishCounter();
+        document.getElementById('fish-inspect-card')?.classList.add('hidden');
+      } catch (_) {
+        alert('PIN අංකය වැරදියි! (Default PIN: 1234)');
+      }
     });
 
     document.getElementById('btn-sound')?.addEventListener('click', (e) => {
@@ -923,6 +1130,25 @@ class DigitalAquariumApp {
     document.getElementById('btn-close-drawer')?.addEventListener('click', () => {
       drawer?.classList.add('hidden');
     });
+
+    // Live .GLB File Picker & Drag-and-Drop Previewer for 3D Artists!
+    document.getElementById('glb-test-input')?.addEventListener('change', (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        const blobUrl = URL.createObjectURL(file);
+        this.loadGlbIntoTank(blobUrl, ENVIRONMENT_CONFIG.fullScene);
+      }
+    });
+
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const file = e.dataTransfer?.files?.[0];
+      if (file && /\.(glb|gltf)$/i.test(file.name)) {
+        const blobUrl = URL.createObjectURL(file);
+        this.loadGlbIntoTank(blobUrl, ENVIRONMENT_CONFIG.fullScene);
+      }
+    });
   }
 
   updateFishCounter() {
@@ -946,6 +1172,9 @@ class DigitalAquariumApp {
     const elapsed = this.clock.elapsedTime;
 
     this.controls.update();
+    for (const mixer of this.gltfMixers) {
+      mixer.update(dt);
+    }
 
     // Update animated caustics every 2nd frame
     if ((Math.floor(elapsed * 60) & 1) === 0) {
@@ -1117,6 +1346,22 @@ class DigitalAquariumApp {
       actor.pos.y = Math.max(-4.7, Math.min(-1.4, actor.pos.y));
       actor.root.position.copy(actor.pos);
       actor.meshGroup.rotation.set(0, Math.sin(elapsed * 0.6 + actor.phase) * 0.2, Math.sin(elapsed * 0.5 + actor.phase) * 0.15);
+    } else if (sp === 'seahorse') {
+      // Seahorse glides upright with gentle vertical bobbing & slight forward bow!
+      const bob = Math.sin((elapsed + actor.phase) * 2.2) * 0.35;
+      actor.pos.x += actor.vel.x * 0.72 * dt;
+      actor.pos.y += (actor.vel.y * 0.65 + bob) * dt;
+      actor.pos.z += actor.vel.z * 0.72 * dt;
+      actor.pos.x = Math.max(-TANK_BOUNDS.x, Math.min(TANK_BOUNDS.x, actor.pos.x));
+      actor.pos.y = Math.max(TANK_BOUNDS.yMin + 0.6, Math.min(TANK_BOUNDS.yMax - 0.3, actor.pos.y));
+      actor.pos.z = Math.max(TANK_BOUNDS.zMin, Math.min(TANK_BOUNDS.zMax, actor.pos.z));
+      actor.root.position.copy(actor.pos);
+
+      const yaw = Math.atan2(-actor.vel.z, actor.vel.x);
+      actor.meshGroup.rotation.order = 'YXZ';
+      actor.meshGroup.rotation.y = yaw;
+      actor.meshGroup.rotation.z = -0.10 + Math.sin((elapsed + actor.phase) * 2.2) * 0.08;
+      actor.meshGroup.rotation.x = 0;
     } else {
       // Fish & Sea Turtles orient smoothly along their 3D velocity vector (+X is nose forward!)
       actor.pos.addScaledVector(actor.vel, dt);

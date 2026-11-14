@@ -1,4 +1,9 @@
-import { SPECIES_LIST, getSpeciesMeta, drawCreatureSilhouette } from './creatures.js';
+import {
+  SPECIES_LIST,
+  getSpeciesMeta,
+  drawCreatureSilhouette,
+  preloadCustomCreatureAssets
+} from './creatures.js';
 import {
   renderPrintableFrameToCanvas,
   createSimulatedDeskPhoto,
@@ -33,6 +38,7 @@ class PrintableSheetsApp {
 
     this.initUI();
     this.renderSheet();
+    preloadCustomCreatureAssets().then(() => this.renderSheet());
   }
 
   clearPaintLayer() {

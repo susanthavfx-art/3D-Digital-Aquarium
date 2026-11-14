@@ -54,10 +54,15 @@ class PaperScannerApp {
     this.arMode = false;
     this.arVideo = document.getElementById('ar-bg-video');
     this.clock = new THREE.Clock();
+    this.gltfLoader = new GLTFLoader();
+    this.userTestGltf = null;
 
     this.initUI();
     this.init3DPreviewStage();
-    this.checkIncomingVirtualSheet();
+    preloadCustomCreatureAssets(GLTFLoader).then(() => {
+      this.checkIncomingVirtualSheet();
+      if (this.uvCanvas) this.update3DPreviewMesh();
+    });
   }
 
   initUI() {

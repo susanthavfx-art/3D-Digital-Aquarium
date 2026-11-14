@@ -6,6 +6,7 @@
 // 5) Illumination Shadow Removal, Crayon Vibrance Boost, & Silhouette Edge-Padding
 
 import { SPECIES_LIST, drawCreatureSilhouette, drawEyeOverlayOnly } from './creatures.js';
+import { EXTRA_CUSTOM_SPECIES } from './custom-creatures-config.js';
 
 export const FRAME_SIZE = 640;
 export const MARKER_CENTER_MIN = 44;
@@ -21,8 +22,17 @@ const SPECIES_BITS = {
   angelfish: [1, 0, 1, 0, 0, 1],
   turtle:    [1, 0, 1, 1, 0, 1],
   jellyfish: [1, 1, 0, 0, 0, 1],
-  starfish:  [1, 1, 0, 1, 0, 1]
+  starfish:  [1, 1, 0, 1, 0, 1],
+  seahorse:  [1, 1, 1, 0, 0, 1]
 };
+
+if (Array.isArray(EXTRA_CUSTOM_SPECIES)) {
+  for (const sp of EXTRA_CUSTOM_SPECIES) {
+    if (sp?.id && Array.isArray(sp.codeBits) && sp.codeBits.length === 6) {
+      SPECIES_BITS[sp.id] = sp.codeBits;
+    }
+  }
+}
 
 // ============================================================================
 // 1. DRAW PRINTABLE SHEET SCAN FRAME (640x640 CANONICAL COORDINATES)

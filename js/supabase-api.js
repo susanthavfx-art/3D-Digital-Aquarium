@@ -1,4 +1,5 @@
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from './config.js';
+import { SPECIES_LIST } from './creatures.js';
 
 // window.supabase is loaded from ./vendor/supabase.js
 const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
@@ -30,7 +31,7 @@ function dataUrlToBlob(dataUrl) {
 }
 
 // Ensure a shared Realtime channel is open for instant broadcasts + Postgres change events
-export function initLiveChannel({ onFishAdded, onTankEvent, onStatusChange } = {}) {
+export function initLiveChannel({ onFishAdded, onFishDeleted, onTankCleared, onTankEvent, onStatusChange } = {}) {
   if (liveChannel) return liveChannel;
 
   liveChannel = supabaseClient.channel('aquarium-live', {
@@ -38,7 +39,6 @@ export function initLiveChannel({ onFishAdded, onTankEvent, onStatusChange } = {
   });
 
   if (onFishAdded) {
-    // 1) Guaranteed Postgres INSERT stream
     liveChannel.on(
       'postgres_changes',
       { event: 'INSERT', schema: 'public', table: 'aquarium_fishes' },
@@ -49,11 +49,32 @@ export function initLiveChannel({ onFishAdded, onTankEvent, onStatusChange } = {
       }
     );
 
-    // 2) Ultra-low-latency Broadcast stream (<80ms!)
     liveChannel.on('broadcast', { event: 'fish_added' }, ({ payload }) => {
       if (payload && payload.fish) {
         onFishAdded(payload.fish);
       }
+    });
+  }
+
+  if (onFishDeleted) {
+    liveChannel.on(
+      'postgres_changes',
+      { event: 'DELETE', schema: 'public', table: 'aquarium_fishes' },
+      (payload) => {
+        if (payload?.old?.id) {
+          onFishDeleted(payload.old.id);
+        }
+      }
+    );
+
+    liveChannel.on('broadcast', { event: 'fish_deleted' }, ({ payload }) => {
+      if (payload?.id) onFishDeleted(payload.id);
+    });
+  }
+
+  if (onTankCleared) {
+    liveChannel.on('broadcast', { event: 'tank_cleared' }, ({ payload }) => {
+      onTankCleared(payload || {});
     });
   }
 
@@ -88,8 +109,10 @@ export async function fetchInitialFishes() {
 
 // Upload scanned UV texture PNG to Supabase Storage & insert fish into Postgres
 export async function submitFishToSupabase({ name, species, textureDataUrl }) {
-  const validSpecies = ['clownfish', 'angelfish', 'jellyfish', 'turtle', 'starfish'];
-  const cleanSpecies = validSpecies.includes(species) ? species : 'clownfish';
+  const knownIds = SPECIES_LIST.map((s) => s.id);
+  const rawSp = String(species || '').trim().toLowerCase();
+  const cleanSpecies =
+    knownIds.includes(rawSp) || /^[a-z0-9_-]{1,32}$/.test(rawSp) ? rawSp : 'clownfish';
   const cleanName = String(name || 'Explorer').trim().slice(0, 32) || 'Explorer';
 
   const blob = dataUrlToBlob(textureDataUrl);
@@ -127,7 +150,6 @@ export async function submitFishToSupabase({ name, species, textureDataUrl }) {
 
   const fish = mapRowToFish(row);
 
-  // Also send immediate Realtime Broadcast for <80ms splash!
   try {
     const ch = initLiveChannel();
     if (channelReady) {
@@ -140,6 +162,55 @@ export async function submitFishToSupabase({ name, species, textureDataUrl }) {
   } catch (_) {}
 
   return fish;
+}
+
+// PIN-protected Reset: Deletes all fishes from Supabase & broadcasts tank_cleared to all screens!
+export async function resetAllFishesInSupabase(adminPin, hideDemo = true) {
+  const { data, error } = await supabaseClient.rpc('reset_aquarium', {
+    admin_pin: String(adminPin || '').trim()
+  });
+
+  if (error) {
+    throw new Error(error.message || 'Invalid Admin PIN');
+  }
+
+  try {
+    const ch = initLiveChannel();
+    if (channelReady) {
+      await ch.send({
+        type: 'broadcast',
+        event: 'tank_cleared',
+        payload: { hideDemo }
+      });
+    }
+  } catch (_) {}
+
+  return data;
+}
+
+// PIN-protected Single Fish Delete
+export async function deleteSingleFishInSupabase(fishId, adminPin) {
+  const { data, error } = await supabaseClient.rpc('delete_aquarium_fish', {
+    target_id: fishId,
+    admin_pin: String(adminPin || '').trim()
+  });
+
+  if (error) {
+    throw new Error(error.message || 'Invalid Admin PIN');
+  }
+
+  try {
+    const ch = initLiveChannel();
+    if (channelReady) {
+      await ch.send({
+        type: 'broadcast',
+        event: 'fish_deleted',
+        payload: { id: fishId }
+      });
+    }
+  } catch (_) {}
+
+  return data;
 }
 
 // Broadcast interactive tank event (shark visit / drop food) from mobile phone!
