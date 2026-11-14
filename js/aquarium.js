@@ -1,0 +1,1141 @@
+import * as THREE from 'three';
+import { OrbitControls } from '../vendor/OrbitControls.js';
+import {
+  SPECIES_LIST,
+  getSpeciesMeta,
+  buildCreatureMesh,
+  animateCreatureMesh,
+  generateHandColoredCanvas
+} from './creatures.js';
+import { fetchInitialFishes, initLiveChannel } from './supabase-api.js';
+import { makeQrPngDataUrl } from './qr.js';
+
+// ============================================================================
+// WEB AUDIO SYNTHESIZER (SPLASH, BUBBLES, CHIME, SHARK THEME - ZERO EXTERNAL MP3S)
+// ============================================================================
+
+class OceanAudio {
+  constructor() {
+    this.ctx = null;
+    this.muted = false;
+  }
+
+  ensure() {
+    if (this.muted) return null;
+    if (!this.ctx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) this.ctx = new AC();
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+    return this.ctx;
+  }
+
+  playSplashArrival() {
+    const ctx = this.ensure();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // Water splash filtered noise burst
+    const bufSize = ctx.sampleRate * 0.65;
+    const noiseBuf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+    const out = noiseBuf.getChannelData(0);
+    for (let i = 0; i < bufSize; i++) {
+      out[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.18));
+    }
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuf;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(950, now);
+    filter.frequency.exponentialRampToValueAtTime(280, now + 0.6);
+    filter.Q.value = 1.6;
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.32, now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.62);
+    noise.connect(filter).connect(nGain).connect(ctx.destination);
+    noise.start(now);
+
+    // Magical ascending arpeggio chime!
+    const notes = [523.25, 659.25, 783.99, 1046.5, 1318.5];
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      const t = now + 0.08 + idx * 0.085;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.14, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0008, t + 0.65);
+      osc.connect(g).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.7);
+    });
+  }
+
+  playPop() {
+    const ctx = this.ensure();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(420, now);
+    osc.frequency.exponentialRampToValueAtTime(880, now + 0.11);
+    g.gain.setValueAtTime(0.12, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + 0.13);
+    osc.connect(g).connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.14);
+  }
+
+  playSharkAlert() {
+    const ctx = this.ensure();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [130.81, 138.59, 130.81, 138.59].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'triangle';
+      const t = now + i * 0.28;
+      osc.frequency.setValueAtTime(freq, t);
+      g.gain.setValueAtTime(0.18, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      osc.connect(g).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.26);
+    });
+  }
+}
+
+// ============================================================================
+// MAIN 3D DIGITAL AQUARIUM ENGINE
+// ============================================================================
+
+const TANK_BOUNDS = { x: 13.5, yMin: -4.6, yMax: 5.2, zMin: -7.5, zMax: 4.5 };
+
+const STARTER_FISH_SPECS = [
+  { id: 'demo-1', name: 'Kasun', species: 'clownfish', palette: ['#ff6b1a', '#ff8c42', '#ff4d00', '#ffffff'], isDemo: true },
+  { id: 'demo-2', name: 'Nethmi', species: 'turtle', palette: ['#2ec4b6', '#52b788', '#ffd166', '#cbf3f0'], isDemo: true },
+  { id: 'demo-3', name: 'Kavindu', species: 'angelfish', palette: ['#00bbf9', '#fee440', '#9b5de5', '#ffffff'], isDemo: true },
+  { id: 'demo-4', name: 'Hiruni', species: 'jellyfish', palette: ['#f72585', '#b5179e', '#4cc9f0', '#fff3b0'], isDemo: true },
+  { id: 'demo-5', name: 'Sahan', species: 'starfish', palette: ['#ffbe0b', '#fb5607', '#ff006e', '#fff8d6'], isDemo: true }
+];
+
+class DigitalAquariumApp {
+  constructor() {
+    this.container = document.getElementById('aquarium-canvas-wrap');
+    this.audio = new OceanAudio();
+    this.creatures = new Map(); // id -> creatureActor
+    this.foodPellets = [];
+    this.splashBursts = [];
+    this.kelpBlades = [];
+    this.godRays = [];
+    this.showLabels = true;
+    this.showDemoFish = true;
+    this.sharkActor = null;
+    this.clock = new THREE.Clock();
+    this.raycaster = new THREE.Raycaster();
+    this.pointer = new THREE.Vector2();
+
+    this.initScene();
+    this.buildEnvironment();
+    this.initUI();
+    this.loadInitialFishes();
+    this.connectRealtime();
+    this.animate();
+  }
+
+  initScene() {
+    this.scene = new THREE.Scene();
+    this.scene.background = new THREE.Color(0x041e3a);
+    this.scene.fog = new THREE.FogExp2(0x062c52, 0.026);
+
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    this.camera = new THREE.PerspectiveCamera(46, w / h, 0.1, 120);
+    this.camera.position.set(0, 0.7, 16.2);
+
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+    this.renderer.setSize(w, h);
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.12;
+    this.container.appendChild(this.renderer.domElement);
+
+    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    this.controls.enableDamping = true;
+    this.controls.dampingFactor = 0.06;
+    this.controls.maxDistance = 25;
+    this.controls.minDistance = 7;
+    this.controls.maxPolarAngle = Math.PI * 0.56;
+    this.controls.minPolarAngle = Math.PI * 0.32;
+    this.controls.minAzimuthAngle = -0.55;
+    this.controls.maxAzimuthAngle = 0.55;
+    this.controls.target.set(0, -0.3, 0);
+
+    // Rich Underwater Lighting
+    const hemi = new THREE.HemisphereLight(0x6be6ff, 0x0b2545, 1.35);
+    this.scene.add(hemi);
+
+    const sunLight = new THREE.DirectionalLight(0xa8f5ff, 1.65);
+    sunLight.position.set(4, 16, 8);
+    this.scene.add(sunLight);
+
+    const frontFill = new THREE.DirectionalLight(0xffffff, 0.65);
+    frontFill.position.set(0, 2, 16);
+    this.scene.add(frontFill);
+
+    const reefGlowL = new THREE.PointLight(0xff5ea8, 2.2, 14);
+    reefGlowL.position.set(-8.5, -3.5, -1.5);
+    const reefGlowR = new THREE.PointLight(0x00f5d4, 2.2, 14);
+    reefGlowR.position.set(8.5, -3.5, -1.5);
+    this.scene.add(reefGlowL, reefGlowR);
+
+    window.addEventListener('resize', () => {
+      this.camera.aspect = window.innerWidth / window.innerHeight;
+      this.camera.updateProjectionMatrix();
+      this.renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // Click tank to inspect creature OR drop fish food pellets!
+    let downPos = { x: 0, y: 0 };
+    this.renderer.domElement.addEventListener('pointerdown', (e) => {
+      downPos = { x: e.clientX, y: e.clientY };
+      this.audio.ensure();
+    });
+    this.renderer.domElement.addEventListener('pointerup', (e) => {
+      if (Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y) > 8) return;
+      this.handleTankTap(e);
+    });
+  }
+
+  buildEnvironment() {
+    // 1. Deep Ocean Gradient Backdrop Dome
+    const bgCanvas = document.createElement('canvas');
+    bgCanvas.width = 64;
+    bgCanvas.height = 512;
+    const bctx = bgCanvas.getContext('2d');
+    const bgGrad = bctx.createLinearGradient(0, 0, 0, 512);
+    bgGrad.addColorStop(0.0, '#1696c8');
+    bgGrad.addColorStop(0.28, '#0a5b8c');
+    bgGrad.addColorStop(0.68, '#052c54');
+    bgGrad.addColorStop(1.0, '#021329');
+    bctx.fillStyle = bgGrad;
+    bctx.fillRect(0, 0, 64, 512);
+    const bgTex = new THREE.CanvasTexture(bgCanvas);
+    bgTex.colorSpace = THREE.SRGBColorSpace;
+
+    const backdrop = new THREE.Mesh(
+      new THREE.SphereGeometry(52, 32, 24),
+      new THREE.MeshBasicMaterial({ map: bgTex, side: THREE.BackSide, fog: false })
+    );
+    this.scene.add(backdrop);
+
+    // 2. Shimmering Water Surface above
+    const surfGeom = new THREE.PlaneGeometry(60, 38, 36, 24);
+    surfGeom.rotateX(Math.PI / 2);
+    const surfMat = new THREE.MeshStandardMaterial({
+      color: 0x5ce1e6,
+      emissive: 0x168aad,
+      emissiveIntensity: 0.45,
+      transparent: true,
+      opacity: 0.36,
+      roughness: 0.15,
+      side: THREE.DoubleSide
+    });
+    this.waterSurface = new THREE.Mesh(surfGeom, surfMat);
+    this.waterSurface.position.y = 7.2;
+    this.scene.add(this.waterSurface);
+
+    // 3. Animated Caustics Sandy Seabed
+    this.causticsCanvas = document.createElement('canvas');
+    this.causticsCanvas.width = 256;
+    this.causticsCanvas.height = 256;
+    this.causticsTexture = new THREE.CanvasTexture(this.causticsCanvas);
+    this.causticsTexture.wrapS = THREE.RepeatWrapping;
+    this.causticsTexture.wrapT = THREE.RepeatWrapping;
+    this.causticsTexture.repeat.set(5, 3);
+    this.updateCausticsCanvas(0);
+
+    const floorGeom = new THREE.PlaneGeometry(54, 34, 64, 40);
+    floorGeom.rotateX(-Math.PI / 2);
+    const fPos = floorGeom.attributes.position;
+    for (let i = 0; i < fPos.count; i++) {
+      const x = fPos.getX(i);
+      const z = fPos.getZ(i);
+      const dune = Math.sin(x * 0.28) * 0.38 + Math.cos(z * 0.36) * 0.32 + (z < -4 ? (-z - 4) * 0.18 : 0);
+      fPos.setY(i, dune);
+    }
+    floorGeom.computeVertexNormals();
+
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0xd9be93,
+      emissive: 0x38bdf8,
+      emissiveMap: this.causticsTexture,
+      emissiveIntensity: 0.32,
+      roughness: 0.88
+    });
+    const seabed = new THREE.Mesh(floorGeom, floorMat);
+    seabed.position.y = -5.6;
+    this.scene.add(seabed);
+
+    // 4. Volumetric Sunlight God Rays
+    const rayCanvas = document.createElement('canvas');
+    rayCanvas.width = 64;
+    rayCanvas.height = 256;
+    const rctx = rayCanvas.getContext('2d');
+    const rg = rctx.createLinearGradient(0, 0, 0, 256);
+    rg.addColorStop(0, 'rgba(180, 248, 255, 0.28)');
+    rg.addColorStop(0.55, 'rgba(110, 225, 250, 0.09)');
+    rg.addColorStop(1, 'rgba(56, 189, 248, 0)');
+    rctx.fillStyle = rg;
+    rctx.fillRect(0, 0, 64, 256);
+    const rayTex = new THREE.CanvasTexture(rayCanvas);
+
+    for (let i = 0; i < 7; i++) {
+      const topR = 0.7 + Math.random() * 0.7;
+      const botR = 2.2 + Math.random() * 1.4;
+      const rayGeom = new THREE.CylinderGeometry(topR, botR, 15, 16, 1, true);
+      const rayMat = new THREE.MeshBasicMaterial({
+        map: rayTex,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+      const ray = new THREE.Mesh(rayGeom, rayMat);
+      ray.position.set(-12 + i * 4.2, 0.8, -3.5 - (i % 3) * 1.8);
+      ray.rotation.z = -0.22 + (i % 2) * 0.08;
+      this.scene.add(ray);
+      this.godRays.push({ mesh: ray, baseX: ray.position.x, phase: i * 1.1 });
+    }
+
+    // 5. Lush 3D Coral Reef Clusters, Rocks & Swaying Kelp Forest
+    this.buildCoralReefs();
+
+    // 6. Rising Ambient 3D Bubbles + Floating Plankton
+    this.buildAmbientBubbles();
+  }
+
+  updateCausticsCanvas(time) {
+    const ctx = this.causticsCanvas.getContext('2d');
+    ctx.fillStyle = '#031526';
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(110, 235, 255, 0.28)';
+    ctx.lineWidth = 3;
+
+    for (let i = 0; i < 14; i++) {
+      ctx.beginPath();
+      const yBase = (i / 14) * 256;
+      for (let x = 0; x <= 256; x += 16) {
+        const y =
+          (yBase +
+            Math.sin(x * 0.05 + time * 1.8 + i) * 18 +
+            Math.cos(x * 0.03 - time * 1.3 + i * 2) * 14 +
+            256) %
+          256;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    this.causticsTexture.needsUpdate = true;
+  }
+
+  buildCoralReefs() {
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x334e68, roughness: 0.92, flatShading: true });
+    const coralPalette = [0xff5d8f, 0xff85a1, 0xff9e00, 0x00f5d4, 0x9b5de5, 0xf15bb5, 0xfee440];
+
+    const reefSpots = [
+      [-10.5, -5.2, -2.5, 1.3],
+      [-6.2, -5.3, -4.2, 1.0],
+      [0.4, -5.5, -5.2, 1.4],
+      [6.8, -5.3, -3.5, 1.15],
+      [10.8, -5.1, -2.0, 1.25],
+      [-12.2, -5.2, 1.2, 0.85],
+      [12.2, -5.2, 1.0, 0.9]
+    ];
+
+    reefSpots.forEach(([rx, ry, rz, s], idx) => {
+      const cluster = new THREE.Group();
+      cluster.position.set(rx, ry, rz);
+
+      // Base rocks
+      for (let r = 0; r < 3; r++) {
+        const rock = new THREE.Mesh(new THREE.DodecahedronGeometry((1.2 + r * 0.35) * s, 1), rockMat);
+        rock.position.set((r - 1) * 0.9 * s, 0.2, (r % 2) * 0.6);
+        rock.scale.set(1.3, 0.68, 1.1);
+        rock.rotation.set(r, r * 1.2, 0);
+        cluster.add(rock);
+      }
+
+      // Brain coral / glowing anemone dome
+      const cColor1 = coralPalette[idx % coralPalette.length];
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(0.75 * s, 18, 14),
+        new THREE.MeshStandardMaterial({
+          color: cColor1,
+          emissive: cColor1,
+          emissiveIntensity: 0.18,
+          roughness: 0.55
+        })
+      );
+      dome.position.set(-0.3 * s, 0.65 * s, 0.3);
+      dome.scale.set(1.1, 0.82, 1.1);
+      cluster.add(dome);
+
+      // Branching Staghorn Coral tubes
+      const cColor2 = coralPalette[(idx + 2) % coralPalette.length];
+      const branchMat = new THREE.MeshStandardMaterial({
+        color: cColor2,
+        emissive: cColor2,
+        emissiveIntensity: 0.16,
+        roughness: 0.45
+      });
+      for (let b = 0; b < 5; b++) {
+        const h = (1.1 + (b % 3) * 0.45) * s;
+        const cyl = new THREE.Mesh(new THREE.CapsuleGeometry(0.11 * s, h, 4, 8), branchMat);
+        const ang = (b / 5) * Math.PI * 2;
+        cyl.position.set(0.45 * s + Math.cos(ang) * 0.35, h * 0.5 + 0.3, Math.sin(ang) * 0.35);
+        cyl.rotation.z = Math.cos(ang) * 0.38;
+        cyl.rotation.x = Math.sin(ang) * 0.38;
+        cluster.add(cyl);
+      }
+
+      this.scene.add(cluster);
+    });
+
+    // Swaying Kelp Seaweed Forest
+    const kelpMat = new THREE.MeshStandardMaterial({
+      color: 0x2ec4b6,
+      emissive: 0x0b525b,
+      emissiveIntensity: 0.25,
+      roughness: 0.5,
+      side: THREE.DoubleSide
+    });
+
+    const kelpLocations = [
+      [-13.2, -2.5], [-12.6, -3.2], [-8.8, -5.2], [-3.5, -5.8],
+      [3.8, -5.6], [9.2, -4.8], [13.0, -2.8], [12.4, -3.6]
+    ];
+
+    kelpLocations.forEach(([kx, kz], idx) => {
+      for (let strand = 0; strand < 3; strand++) {
+        const height = 3.2 + Math.random() * 2.6;
+        const geom = new THREE.PlaneGeometry(0.32, height, 2, 14);
+        geom.translate(0, height / 2, 0);
+        const base = geom.attributes.position.array.slice();
+        const mesh = new THREE.Mesh(geom, kelpMat);
+        mesh.position.set(kx + (strand - 1) * 0.4, -5.6, kz + (strand % 2) * 0.35);
+        mesh.rotation.y = strand * 0.8;
+        this.scene.add(mesh);
+        this.kelpBlades.push({ mesh, base, height, phase: idx + strand * 1.3 });
+      }
+    });
+  }
+
+  buildAmbientBubbles() {
+    const count = 160;
+    const geom = new THREE.SphereGeometry(0.085, 10, 8);
+    const mat = new THREE.MeshPhysicalMaterial({
+      color: 0xdff9ff,
+      transmission: 0.65,
+      transparent: true,
+      opacity: 0.55,
+      roughness: 0.08,
+      metalness: 0.1
+    });
+    this.bubbleInst = new THREE.InstancedMesh(geom, mat, count);
+    this.bubbleData = [];
+    const dummy = new THREE.Object3D();
+
+    for (let i = 0; i < count; i++) {
+      const b = {
+        x: (Math.random() - 0.5) * 28,
+        y: -5.5 + Math.random() * 12.5,
+        z: -7 + Math.random() * 11,
+        speed: 0.6 + Math.random() * 1.1,
+        scale: 0.45 + Math.random() * 1.35,
+        phase: Math.random() * Math.PI * 2
+      };
+      this.bubbleData.push(b);
+      dummy.position.set(b.x, b.y, b.z);
+      dummy.scale.setScalar(b.scale);
+      dummy.updateMatrix();
+      this.bubbleInst.setMatrixAt(i, dummy.matrix);
+    }
+    this.scene.add(this.bubbleInst);
+  }
+
+  // ==========================================================================
+  // CREATURE SPAWNING & LIFELIKE SWIMMING AI
+  // ==========================================================================
+
+  async loadInitialFishes() {
+    // Spawn starter demo fishes first so tank is immediately vibrant
+    this.syncDemoFishes();
+
+    try {
+      const fishes = await fetchInitialFishes();
+      for (const f of fishes) {
+        await this.spawnCreatureFromRecord(f, false);
+      }
+      this.updateFishCounter();
+    } catch (err) {
+      console.warn('Could not load initial fishes from Supabase:', err);
+    }
+  }
+
+  syncDemoFishes() {
+    if (this.showDemoFish) {
+      for (const spec of STARTER_FISH_SPECS) {
+        if (!this.creatures.has(spec.id)) {
+          const canvas = generateHandColoredCanvas(spec.species, spec.palette, false);
+          const tex = new THREE.CanvasTexture(canvas);
+          this.registerCreatureActor({
+            id: spec.id,
+            name: spec.name,
+            species: spec.species,
+            texture: tex,
+            previewUrl: canvas.toDataURL('image/png'),
+            isDemo: true,
+            celebrate: false
+          });
+        }
+      }
+    } else {
+      for (const spec of STARTER_FISH_SPECS) {
+        this.removeCreature(spec.id);
+      }
+    }
+    this.updateFishCounter();
+  }
+
+  spawnCreatureFromRecord(fish, celebrate = true) {
+    return new Promise((resolve) => {
+      if (this.creatures.has(fish.id)) return resolve();
+      const loader = new THREE.TextureLoader();
+      loader.setCrossOrigin('anonymous');
+      loader.load(
+        fish.textureUrl,
+        (tex) => {
+          this.registerCreatureActor({
+            id: fish.id,
+            name: fish.name,
+            species: fish.species,
+            texture: tex,
+            previewUrl: fish.textureUrl,
+            createdAt: fish.createdAt,
+            isDemo: false,
+            celebrate
+          });
+          this.updateFishCounter();
+          resolve();
+        },
+        undefined,
+        () => resolve()
+      );
+    });
+  }
+
+  registerCreatureActor({ id, name, species, texture, previewUrl, createdAt, isDemo, celebrate }) {
+    const meta = getSpeciesMeta(species);
+    const meshGroup = buildCreatureMesh(THREE, species, texture);
+    meshGroup.scale.setScalar(meta.baseScale);
+    meshGroup.userData.creatureId = id;
+
+    // Create floating Artist Name Badge Sprite
+    const labelSprite = this.createNameBadgeSprite(`${meta.emoji} ${name}`, isDemo);
+    labelSprite.position.set(0, species === 'jellyfish' ? 1.32 : 1.08, 0);
+    labelSprite.visible = this.showLabels;
+
+    const root = new THREE.Group();
+    root.add(meshGroup);
+    root.add(labelSprite);
+
+    // Initial position & target steering state
+    const actor = {
+      id,
+      name,
+      species,
+      previewUrl,
+      createdAt: createdAt || new Date().toISOString(),
+      isDemo: !!isDemo,
+      root,
+      meshGroup,
+      labelSprite,
+      pos: new THREE.Vector3(),
+      vel: new THREE.Vector3(),
+      target: new THREE.Vector3(),
+      speed: species === 'jellyfish' ? 1.05 : species === 'starfish' ? 0.55 : 2.15 + Math.random() * 0.75,
+      phase: Math.random() * 100,
+      heroTimer: celebrate ? 4.8 : 0,
+      retargetTimer: 0
+    };
+
+    if (celebrate) {
+      // Dramatic dive from top center water surface!
+      actor.pos.set(0, 6.8, 3.2);
+      actor.vel.set(0, -3.5, 0.8);
+      actor.target.set(0, 0.8, 6.2); // Spotlight front-and-center near glass!
+      this.triggerArrivalSplash(name, meta);
+    } else {
+      actor.pos.copy(this.pickRandomZoneTarget(species));
+      actor.target.copy(this.pickRandomZoneTarget(species));
+      const dir = Math.random() > 0.5 ? 1 : -1;
+      actor.vel.set(dir * actor.speed, 0, 0);
+    }
+
+    root.position.copy(actor.pos);
+    this.scene.add(root);
+    this.creatures.set(id, actor);
+  }
+
+  pickRandomZoneTarget(species) {
+    const x = (Math.random() - 0.5) * (TANK_BOUNDS.x * 1.75);
+    const z = TANK_BOUNDS.zMin + 1.2 + Math.random() * (TANK_BOUNDS.zMax - TANK_BOUNDS.zMin - 2.0);
+    let y = (Math.random() - 0.5) * 6.5;
+
+    if (species === 'turtle') y = 0.8 + Math.random() * 3.8;
+    else if (species === 'jellyfish') y = -1.5 + Math.random() * 5.8;
+    else if (species === 'starfish') {
+      // Starfish glide along the front lower glass or sandy coral floor!
+      return new THREE.Vector3(x * 0.85, -4.3 + Math.random() * 2.4, 1.5 + Math.random() * 2.6);
+    }
+    return new THREE.Vector3(x, y, z);
+  }
+
+  createNameBadgeSprite(text, isDemo) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 320;
+    canvas.height = 72;
+    const ctx = canvas.getContext('2d');
+
+    ctx.font = '600 28px system-ui, -apple-system, sans-serif';
+    const textW = Math.min(270, ctx.measureText(text).width + 44);
+    const rx = (320 - textW) / 2;
+
+    ctx.fillStyle = isDemo ? 'rgba(8, 28, 52, 0.68)' : 'rgba(6, 78, 98, 0.84)';
+    ctx.strokeStyle = isDemo ? 'rgba(125, 211, 252, 0.45)' : 'rgba(45, 212, 191, 0.85)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(rx, 12, textW, 48, 24);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#f8fafc';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, 160, 37);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+    const sprite = new THREE.Sprite(mat);
+    sprite.scale.set(2.15, 0.48, 1);
+    return sprite;
+  }
+
+  triggerArrivalSplash(artistName, meta) {
+    this.audio.playSplashArrival();
+
+    // 3D Splash bubble burst from top center!
+    const burstGroup = new THREE.Group();
+    const bGeom = new THREE.SphereGeometry(0.12, 8, 8);
+    const bMat = new THREE.MeshBasicMaterial({ color: 0xbae6fd, transparent: true, opacity: 0.85 });
+    const particles = [];
+    for (let i = 0; i < 55; i++) {
+      const m = new THREE.Mesh(bGeom, bMat);
+      m.position.set((Math.random() - 0.5) * 2.2, 6.2, 3.2 + (Math.random() - 0.5) * 1.8);
+      const v = new THREE.Vector3(
+        (Math.random() - 0.5) * 4.5,
+        -2.5 - Math.random() * 4.5,
+        (Math.random() - 0.5) * 3.5
+      );
+      burstGroup.add(m);
+      particles.push({ m, v });
+    }
+    this.scene.add(burstGroup);
+    this.splashBursts.push({ group: burstGroup, mat: bMat, particles, age: 0 });
+
+    // Show celebratory toast banner
+    const banner = document.getElementById('arrival-toast');
+    if (banner) {
+      banner.innerHTML = `
+        <span class="toast-emoji">${meta.emoji}</span>
+        <div>
+          <div class="toast-title">අලුත් මාළුවෙක් Aquarium එකට ආවා! 🎉</div>
+          <div class="toast-sub"><strong>${this.escapeHtml(artistName)}</strong> ගේ <strong>${meta.name}</strong> දැන් පීනනවා!</div>
+        </div>
+      `;
+      banner.classList.add('visible');
+      clearTimeout(this.toastTimer);
+      this.toastTimer = setTimeout(() => banner.classList.remove('visible'), 5200);
+    }
+  }
+
+  removeCreature(id) {
+    const actor = this.creatures.get(id);
+    if (!actor) return;
+    this.scene.remove(actor.root);
+    this.creatures.delete(id);
+  }
+
+  // ==========================================================================
+  // INTERACTIVE SHARK VISIT & FOOD DROP & CREATURE CLICK SPOTLIGHT
+  // ==========================================================================
+
+  triggerSharkVisit() {
+    if (this.sharkActor) return;
+    this.audio.playSharkAlert();
+
+    const sharkGroup = new THREE.Group();
+    const sharkMat = new THREE.MeshStandardMaterial({ color: 0x4a6fa5, roughness: 0.38, metalness: 0.08 });
+    const bellyMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.45 });
+
+    // Sleek 3D Reef Shark body
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.68, 2.8, 8, 18), sharkMat);
+    torso.rotation.z = Math.PI / 2;
+    torso.scale.set(1, 1.15, 0.82);
+    sharkGroup.add(torso);
+
+    const belly = new THREE.Mesh(new THREE.CapsuleGeometry(0.56, 2.4, 6, 14), bellyMat);
+    belly.rotation.z = Math.PI / 2;
+    belly.position.set(0.1, -0.22, 0);
+    sharkGroup.add(belly);
+
+    // Iconic Dorsal Fin
+    const dorsalShape = new THREE.Shape();
+    dorsalShape.moveTo(0.4, 0.55);
+    dorsalShape.quadraticCurveTo(-0.1, 1.75, -0.65, 1.65);
+    dorsalShape.quadraticCurveTo(-0.35, 1.0, -0.55, 0.52);
+    const dorsal = new THREE.Mesh(
+      new THREE.ExtrudeGeometry(dorsalShape, { depth: 0.1, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03 }),
+      sharkMat
+    );
+    dorsal.position.z = -0.05;
+    sharkGroup.add(dorsal);
+
+    // Pectoral fins
+    const pecGeom = new THREE.ConeGeometry(0.45, 1.45, 4);
+    const pecL = new THREE.Mesh(pecGeom, sharkMat);
+    pecL.position.set(0.35, -0.35, 0.85);
+    pecL.rotation.set(1.15, 0, -0.35);
+    const pecR = pecL.clone();
+    pecR.position.z = -0.85;
+    pecR.rotation.x = -1.15;
+    sharkGroup.add(pecL, pecR);
+
+    // Wagging Shark Tail
+    const tailPivot = new THREE.Group();
+    tailPivot.position.set(-2.05, 0, 0);
+    const upperTail = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.7, 5), sharkMat);
+    upperTail.position.set(-0.45, 0.55, 0);
+    upperTail.rotation.z = 0.75;
+    const lowerTail = new THREE.Mesh(new THREE.ConeGeometry(0.32, 1.1, 5), sharkMat);
+    lowerTail.position.set(-0.35, -0.45, 0);
+    lowerTail.rotation.z = 2.35;
+    tailPivot.add(upperTail, lowerTail);
+    sharkGroup.add(tailPivot);
+
+    // Friendly Shark Eyes
+    const eyeGeom = new THREE.SphereGeometry(0.1, 10, 10);
+    const eyeMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+    const eyeL = new THREE.Mesh(eyeGeom, eyeMat);
+    eyeL.position.set(1.45, 0.18, 0.46);
+    const eyeR = eyeL.clone();
+    eyeR.position.z = -0.46;
+    sharkGroup.add(eyeL, eyeR);
+
+    sharkGroup.scale.setScalar(1.35);
+    sharkGroup.position.set(-22, 1.2, -1.5);
+    this.scene.add(sharkGroup);
+    this.sharkActor = { group: sharkGroup, tailPivot };
+  }
+
+  dropFoodAtWorld(wx, wy, wz) {
+    this.audio.playPop();
+    const geom = new THREE.SphereGeometry(0.11, 10, 10);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0xffbe0b,
+      emissive: 0xfb8500,
+      emissiveIntensity: 0.45
+    });
+    for (let i = 0; i < 6; i++) {
+      const m = new THREE.Mesh(geom, mat);
+      m.position.set(
+        wx + (Math.random() - 0.5) * 1.4,
+        wy + (Math.random() - 0.5) * 0.6,
+        wz + (Math.random() - 0.5) * 1.2
+      );
+      this.scene.add(m);
+      this.foodPellets.push({ mesh: m, age: 0 });
+    }
+  }
+
+  handleTankTap(e) {
+    // Ignore clicks on UI controls
+    if (e.target !== this.renderer.domElement) return;
+
+    this.pointer.x = (e.clientX / window.innerWidth) * 2 - 1;
+    this.pointer.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+
+    const meshList = [];
+    for (const actor of this.creatures.values()) {
+      meshList.push(actor.meshGroup);
+    }
+    const hits = this.raycaster.intersectObjects(meshList, true);
+    if (hits.length > 0) {
+      let obj = hits[0].object;
+      while (obj && !obj.userData.creatureId) obj = obj.parent;
+      if (obj && obj.userData.creatureId) {
+        const actor = this.creatures.get(obj.userData.creatureId);
+        if (actor) {
+          this.showCreatureSpotlightModal(actor);
+          return;
+        }
+      }
+    }
+
+    // Otherwise drop fish food pellets at z = 0 plane!
+    const planeZ = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+    const hitPt = new THREE.Vector3();
+    if (this.raycaster.ray.intersectPlane(planeZ, hitPt)) {
+      const clampedX = Math.max(-11, Math.min(11, hitPt.x));
+      const clampedY = Math.max(-3, Math.min(5.2, hitPt.y));
+      this.dropFoodAtWorld(clampedX, clampedY, 0.5);
+    }
+  }
+
+  showCreatureSpotlightModal(actor) {
+    this.audio.playPop();
+    const meta = getSpeciesMeta(actor.species);
+    const modal = document.getElementById('fish-inspect-card');
+    if (!modal) return;
+    document.getElementById('inspect-img').src = actor.previewUrl;
+    document.getElementById('inspect-title').textContent = `${meta.emoji} ${actor.name}'s ${meta.name}`;
+    document.getElementById('inspect-sub').textContent = actor.isDemo
+      ? 'Starter Demo Creature • Scan a sheet to add yours!'
+      : `Scanned & Colored Paper Sheet • ${new Date(actor.createdAt).toLocaleTimeString()}`;
+    modal.classList.remove('hidden');
+  }
+
+  // ==========================================================================
+  // SUPABASE REALTIME SYNC (POSTGRES CHANGES + BROADCAST)
+  // ==========================================================================
+
+  connectRealtime() {
+    const statusDot = document.getElementById('live-status-dot');
+    initLiveChannel({
+      onFishAdded: (fish) => {
+        if (fish) this.spawnCreatureFromRecord(fish, true);
+      },
+      onTankEvent: (payload) => {
+        if (payload?.action === 'shark') this.triggerSharkVisit();
+        else if (payload?.action === 'feed') this.dropFoodAtWorld(0, 4.2, 0.5);
+      },
+      onStatusChange: (online) => {
+        if (statusDot) statusDot.classList.toggle('online', !!online);
+      }
+    });
+  }
+
+  // ==========================================================================
+  // UI BINDINGS & PURE CLIENT-SIDE QR CODE GENERATION
+  // ==========================================================================
+
+  initUI() {
+    const scanUrl = new URL('./scan.html', window.location.href).href;
+    const qrImg = document.getElementById('qr-code-img');
+    if (qrImg) {
+      qrImg.src = makeQrPngDataUrl(scanUrl, 260, '#062038', '#ffffff');
+    }
+    const urlLabel = document.getElementById('scan-url-text');
+    if (urlLabel) urlLabel.textContent = scanUrl.replace(/^https?:\/\//, '');
+
+    document.getElementById('btn-feed')?.addEventListener('click', () => {
+      this.dropFoodAtWorld((Math.random() - 0.5) * 6, 4.4, 0.8);
+    });
+
+    document.getElementById('btn-shark')?.addEventListener('click', () => {
+      this.triggerSharkVisit();
+    });
+
+    document.getElementById('btn-labels')?.addEventListener('click', (e) => {
+      this.showLabels = !this.showLabels;
+      for (const actor of this.creatures.values()) {
+        actor.labelSprite.visible = this.showLabels;
+      }
+      e.currentTarget.classList.toggle('active-pill', this.showLabels);
+    });
+
+    document.getElementById('btn-demo-toggle')?.addEventListener('click', (e) => {
+      this.showDemoFish = !this.showDemoFish;
+      this.syncDemoFishes();
+      e.currentTarget.classList.toggle('active-pill', this.showDemoFish);
+    });
+
+    document.getElementById('btn-sound')?.addEventListener('click', (e) => {
+      this.audio.muted = !this.audio.muted;
+      if (!this.audio.muted) this.audio.playPop();
+      e.currentTarget.textContent = this.audio.muted ? '🔇 Muted' : '🔊 Sound';
+    });
+
+    document.getElementById('btn-fullscreen')?.addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen?.().catch(() => {});
+      } else {
+        document.exitFullscreen?.().catch(() => {});
+      }
+    });
+
+    document.getElementById('btn-toggle-qr')?.addEventListener('click', () => {
+      document.getElementById('qr-card')?.classList.toggle('minimized');
+    });
+
+    document.getElementById('close-inspect')?.addEventListener('click', () => {
+      document.getElementById('fish-inspect-card')?.classList.add('hidden');
+    });
+
+    // Built-in Split-Screen Studio Drawer (test Scanner or Printable Sheets right next to the 3D Tank!)
+    const drawer = document.getElementById('studio-drawer');
+    const iframe = document.getElementById('studio-iframe');
+
+    document.getElementById('btn-open-scanner-drawer')?.addEventListener('click', () => {
+      if (iframe && drawer) {
+        if (!iframe.src.includes('scan.html')) iframe.src = './scan.html';
+        drawer.classList.remove('hidden');
+      }
+    });
+
+    document.getElementById('btn-open-sheets-drawer')?.addEventListener('click', () => {
+      if (iframe && drawer) {
+        if (!iframe.src.includes('sheets.html')) iframe.src = './sheets.html';
+        drawer.classList.remove('hidden');
+      }
+    });
+
+    document.getElementById('btn-close-drawer')?.addEventListener('click', () => {
+      drawer?.classList.add('hidden');
+    });
+  }
+
+  updateFishCounter() {
+    const el = document.getElementById('fish-count-badge');
+    if (el) el.textContent = `${this.creatures.size} Sea Creatures`;
+  }
+
+  escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  // ==========================================================================
+  // MAIN RENDER & SIMULATION LOOP (60 FPS)
+  // ==========================================================================
+
+  animate() {
+    requestAnimationFrame(() => this.animate());
+    const dt = Math.min(0.05, this.clock.getDelta());
+    const elapsed = this.clock.elapsedTime;
+
+    this.controls.update();
+
+    // Update animated caustics every 2nd frame
+    if ((Math.floor(elapsed * 60) & 1) === 0) {
+      this.updateCausticsCanvas(elapsed);
+    }
+
+    // Sway God Rays & Kelp Forest
+    for (const r of this.godRays) {
+      r.mesh.position.x = r.baseX + Math.sin(elapsed * 0.45 + r.phase) * 0.65;
+    }
+    for (const k of this.kelpBlades) {
+      const pos = k.mesh.geometry.attributes.position;
+      const arr = pos.array;
+      for (let i = 0; i < arr.length; i += 3) {
+        const yNorm = k.base[i + 1] / k.height;
+        arr[i] = k.base[i] + Math.sin(elapsed * 1.6 - yNorm * 2.5 + k.phase) * 0.35 * yNorm;
+        arr[i + 2] = k.base[i + 2] + Math.cos(elapsed * 1.2 - yNorm * 2.0 + k.phase) * 0.2 * yNorm;
+      }
+      pos.needsUpdate = true;
+    }
+
+    // Update Ambient Rising Bubbles
+    const dummy = new THREE.Object3D();
+    for (let i = 0; i < this.bubbleData.length; i++) {
+      const b = this.bubbleData[i];
+      b.y += b.speed * dt;
+      if (b.y > 7.0) {
+        b.y = -5.5;
+        b.x = (Math.random() - 0.5) * 28;
+      }
+      const wobble = Math.sin(elapsed * 2.4 + b.phase) * 0.18;
+      dummy.position.set(b.x + wobble, b.y, b.z);
+      dummy.scale.setScalar(b.scale);
+      dummy.updateMatrix();
+      this.bubbleInst.setMatrixAt(i, dummy.matrix);
+    }
+    this.bubbleInst.instanceMatrix.needsUpdate = true;
+
+    // Update Food Pellets
+    for (let i = this.foodPellets.length - 1; i >= 0; i--) {
+      const p = this.foodPellets[i];
+      p.age += dt;
+      p.mesh.position.y -= 0.85 * dt;
+      p.mesh.position.x += Math.sin(elapsed * 3 + i) * 0.2 * dt;
+      if (p.mesh.position.y < -5.1 || p.age > 12) {
+        this.scene.remove(p.mesh);
+        this.foodPellets.splice(i, 1);
+      }
+    }
+
+    // Update Splash Bursts
+    for (let i = this.splashBursts.length - 1; i >= 0; i--) {
+      const sb = this.splashBursts[i];
+      sb.age += dt;
+      sb.mat.opacity = Math.max(0, 0.85 * (1 - sb.age / 2.2));
+      for (const pt of sb.particles) {
+        pt.m.position.addScaledVector(pt.v, dt);
+        pt.v.y += 4.2 * dt; // buoyancy upward!
+        pt.v.multiplyScalar(0.96);
+      }
+      if (sb.age > 2.2) {
+        this.scene.remove(sb.group);
+        this.splashBursts.splice(i, 1);
+      }
+    }
+
+    // Update Visiting Reef Shark
+    if (this.sharkActor) {
+      const sh = this.sharkActor;
+      sh.group.position.x += 4.8 * dt;
+      sh.group.position.y = 1.0 + Math.sin(elapsed * 1.4) * 0.55;
+      sh.tailPivot.rotation.y = Math.sin(elapsed * 5.2) * 0.38;
+      sh.group.rotation.y = Math.sin(elapsed * 2.6) * 0.06;
+      if (sh.group.position.x > 24) {
+        this.scene.remove(sh.group);
+        this.sharkActor = null;
+      }
+    }
+
+    // Update All Swimming User & Demo Creatures!
+    for (const actor of this.creatures.values()) {
+      this.stepCreatureAI(actor, dt, elapsed);
+    }
+
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  stepCreatureAI(actor, dt, elapsed) {
+    const sp = actor.species;
+
+    // 1. Hero Arrival Spotlight Moment (spins happily near front glass for 4.5s!)
+    if (actor.heroTimer > 0) {
+      actor.heroTimer -= dt;
+      actor.pos.lerp(actor.target, dt * 2.6);
+      actor.root.position.copy(actor.pos);
+      actor.meshGroup.rotation.set(0, Math.sin(elapsed * 2.2) * 0.85, 0);
+      animateCreatureMesh(actor.meshGroup, elapsed + actor.phase, 1.35);
+      if (actor.heroTimer <= 0) {
+        actor.target.copy(this.pickRandomZoneTarget(sp));
+        actor.vel.set(actor.speed, 0, 0);
+      }
+      return;
+    }
+
+    // 2. Seeking Food Pellets (for fish & turtles)
+    let chasingFood = false;
+    if (this.foodPellets.length > 0 && sp !== 'jellyfish' && sp !== 'starfish') {
+      let nearest = null;
+      let minDist = 8.5;
+      for (let i = 0; i < this.foodPellets.length; i++) {
+        const fp = this.foodPellets[i];
+        const d = actor.pos.distanceTo(fp.mesh.position);
+        if (d < minDist) {
+          minDist = d;
+          nearest = { fp, idx: i };
+        }
+      }
+      if (nearest) {
+        actor.target.copy(nearest.fp.mesh.position);
+        chasingFood = true;
+        if (minDist < 0.75) {
+          // Eat pellet!
+          this.scene.remove(nearest.fp.mesh);
+          this.foodPellets.splice(nearest.idx, 1);
+          this.audio.playPop();
+        }
+      }
+    }
+
+    // 3. Scatter playfully away from Visiting Shark!
+    let fleeImpulse = new THREE.Vector3();
+    if (this.sharkActor) {
+      const diff = actor.pos.clone().sub(this.sharkActor.group.position);
+      const dist = diff.length();
+      if (dist < 5.5 && dist > 0.01) {
+        fleeImpulse.copy(diff.normalize()).multiplyScalar((5.5 - dist) * 2.4);
+      }
+    }
+
+    // 4. Wander target retargeting
+    actor.retargetTimer -= dt;
+    if (!chasingFood && (actor.pos.distanceTo(actor.target) < 1.6 || actor.retargetTimer <= 0)) {
+      actor.target.copy(this.pickRandomZoneTarget(sp));
+      actor.retargetTimer = 4 + Math.random() * 5;
+    }
+
+    const desired = actor.target.clone().sub(actor.pos);
+    if (desired.lengthSq() > 0.001) desired.normalize();
+    const activeSpeed = actor.speed * (chasingFood ? 1.65 : 1.0);
+    desired.multiplyScalar(activeSpeed).add(fleeImpulse);
+
+    actor.vel.lerp(desired, dt * (sp === 'starfish' ? 1.2 : 1.8));
+
+    // Species-specific motion & orientation
+    if (sp === 'jellyfish') {
+      // Jellyfish bob vertically with pulse thrust!
+      const bob = Math.sin((elapsed + actor.phase) * 2.8) * 0.45;
+      actor.pos.x += actor.vel.x * 0.45 * dt;
+      actor.pos.y += (actor.vel.y * 0.4 + bob) * dt;
+      actor.pos.z += actor.vel.z * 0.45 * dt;
+      actor.pos.y = Math.max(-3.6, Math.min(5.2, actor.pos.y));
+      actor.root.position.copy(actor.pos);
+      actor.meshGroup.rotation.z = -actor.vel.x * 0.14;
+      actor.meshGroup.rotation.x = actor.vel.z * 0.14;
+      actor.meshGroup.rotation.y += dt * 0.35;
+    } else if (sp === 'starfish') {
+      // Starfish faces camera smoothly while gliding across reef/glass
+      actor.pos.addScaledVector(actor.vel, dt);
+      actor.pos.y = Math.max(-4.7, Math.min(-1.4, actor.pos.y));
+      actor.root.position.copy(actor.pos);
+      actor.meshGroup.rotation.set(0, Math.sin(elapsed * 0.6 + actor.phase) * 0.2, Math.sin(elapsed * 0.5 + actor.phase) * 0.15);
+    } else {
+      // Fish & Sea Turtles orient smoothly along their 3D velocity vector (+X is nose forward!)
+      actor.pos.addScaledVector(actor.vel, dt);
+      actor.pos.x = Math.max(-TANK_BOUNDS.x, Math.min(TANK_BOUNDS.x, actor.pos.x));
+      actor.pos.y = Math.max(TANK_BOUNDS.yMin, Math.min(TANK_BOUNDS.yMax, actor.pos.y));
+      actor.pos.z = Math.max(TANK_BOUNDS.zMin, Math.min(TANK_BOUNDS.zMax, actor.pos.z));
+      actor.root.position.copy(actor.pos);
+
+      const horizLen = Math.hypot(actor.vel.x, actor.vel.z) || 0.001;
+      const yaw = Math.atan2(-actor.vel.z, actor.vel.x);
+      const pitch = Math.atan2(actor.vel.y, horizLen) * 0.55;
+      actor.meshGroup.rotation.order = 'YXZ';
+      actor.meshGroup.rotation.y = yaw;
+      actor.meshGroup.rotation.z = pitch;
+      actor.meshGroup.rotation.x = 0;
+    }
+
+    animateCreatureMesh(actor.meshGroup, elapsed + actor.phase, chasingFood ? 1.5 : 1.0);
+  }
+}
+
+new DigitalAquariumApp();
