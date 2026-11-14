@@ -99,11 +99,17 @@
 
     <!-- STEP 3: 3D STUDIO & LIVE PHONE CAMERA AR PREVIEW + SEND TO AQUARIUM -->
     <section id="step-preview" class="panel-card hidden">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; margin-bottom: 8px;">
         <span id="crop-auto-badge" class="step-badge" style="margin-bottom: 0;">✅ 3D &amp; AR READY</span>
-        <button id="btn-adjust-corners" class="hud-btn" style="font-size: 0.74rem; padding: 4px 10px;">
-          🔧 Adjust Corners
-        </button>
+        <div style="display: flex; gap: 6px;">
+          <button id="btn-test-creature-glb" class="hud-btn" style="font-size: 0.74rem; padding: 4px 9px;" title="Test your own Blender .GLB creature with this scanned UV texture!">
+            📦 Test .GLB
+          </button>
+          <input id="test-creature-glb-input" type="file" accept=".glb,.gltf" class="hidden" />
+          <button id="btn-adjust-corners" class="hud-btn" style="font-size: 0.74rem; padding: 4px 10px;">
+            🔧 Adjust Corners
+          </button>
+        </div>
       </div>
 
       <div class="preview-mode-tabs">

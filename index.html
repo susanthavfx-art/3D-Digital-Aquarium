@@ -38,6 +38,11 @@
       <button id="btn-shark" class="hud-btn">🦈 Shark!</button>
       <button id="btn-labels" class="hud-btn active-pill">🏷️ Names</button>
       <button id="btn-demo-toggle" class="hud-btn active-pill">🎨 Demo Fish</button>
+      <label class="hud-btn" style="cursor: pointer;" title="Preview your own Blender .glb tank model instantly!">
+        🧱 Test .GLB
+        <input id="glb-test-input" type="file" accept=".glb,.gltf" class="hidden" />
+      </label>
+      <button id="btn-reset-tank" class="hud-btn" title="Clear all fish &amp; start fresh">🧹 Reset</button>
       <button id="btn-sound" class="hud-btn">🔊 Sound</button>
       <button id="btn-fullscreen" class="hud-btn">⛶ Fullscreen</button>
     </div>
@@ -54,11 +59,58 @@
   <!-- Creature Click Spotlight Card -->
   <div id="fish-inspect-card" class="inspect-card hidden">
     <img id="inspect-img" src="" alt="Scanned texture" />
-    <div>
+    <div style="flex: 1; min-width: 0;">
       <div id="inspect-title" style="font-weight: 700; font-size: 0.96rem; color: #5eead4;"></div>
       <div id="inspect-sub" style="font-size: 0.78rem; color: #cbd5e1; margin-top: 3px;"></div>
+      <button
+        id="btn-delete-single-fish"
+        class="hud-btn hidden"
+        style="margin-top: 7px; padding: 4px 10px; font-size: 0.74rem; border-color: rgba(248, 113, 113, 0.5); color: #fca5a5;"
+      >
+        🗑️ මේ මාළුවා අයින් කරන්න
+      </button>
     </div>
     <button id="close-inspect" class="inspect-close" aria-label="Close">✕</button>
+  </div>
+
+  <!-- PIN-Protected Reset Aquarium Modal -->
+  <div
+    id="reset-tank-modal"
+    class="hidden"
+    style="position: fixed; inset: 0; z-index: 60; background: rgba(2, 12, 27, 0.8); backdrop-filter: blur(8px); display: flex; align-items: center; justify-content: center; padding: 16px;"
+  >
+    <div class="panel-card" style="max-width: 420px; width: 100%;">
+      <span class="step-badge">ADMIN RESET • CLEAR TANK</span>
+      <h2 class="panel-title">🧹 මුල ඉඳලා අලුතින් පටන් ගමුද?</h2>
+      <p class="panel-desc">
+        මේකෙන් Supabase database එකේ ඉන්න සියලුම scan කරපු මාළු ඉවත් කරලා ටැංකිය අලුත් session එකකට ලෑස්ති කරනවා.
+      </p>
+
+      <div style="margin-bottom: 12px;">
+        <label style="display: block; font-size: 0.8rem; font-weight: 700; color: #bae6fd; margin-bottom: 5px;">
+          🔐 Admin PIN අංකය (Default: <code>1234</code>):
+        </label>
+        <input
+          id="reset-pin-input"
+          type="password"
+          inputmode="numeric"
+          placeholder="1234"
+          class="text-input"
+        />
+      </div>
+
+      <label style="display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: #cbd5e1; margin-bottom: 16px; cursor: pointer;">
+        <input id="chk-reset-hide-demo" type="checkbox" checked />
+        Starter Demo මාළු 5 දෙනාත් hide කරන්න (100% හිස් ටැංකියක්)
+      </label>
+
+      <div style="display: flex; gap: 8px;">
+        <button id="btn-cancel-reset" class="btn-block btn-outline" style="width: auto;">Cancel</button>
+        <button id="btn-confirm-reset" class="btn-block btn-gradient-coral" style="flex: 1;">
+          🧹 ඔක්කොම මාළු ඉවත් කරන්න
+        </button>
+      </div>
+    </div>
   </div>
 
   <!-- Bottom-Right Phone QR Code Card -->
