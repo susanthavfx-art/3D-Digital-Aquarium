@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Digital Aquarium • Live Interactive Display</title>
+  <link rel="stylesheet" href="./css/styles.css" />
+  <script src="./vendor/supabase.js"></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "./vendor/three.module.js"
+      }
+    }
+  </script>
+</head>
+<body class="aquarium-body">
+  <!-- Fullscreen 3D Underwater WebGL Viewport -->
+  <div id="aquarium-canvas-wrap"></div>
+
+  <!-- Top Glassmorphic Exhibition HUD -->
+  <header class="top-hud">
+    <div class="brand-pill">
+      <span id="live-status-dot" class="live-dot" title="Supabase Realtime Status"></span>
+      <span class="brand-title">🐠 3D Digital Aquarium</span>
+      <span id="fish-count-badge" class="count-badge">5 Sea Creatures</span>
+    </div>
+
+    <div class="hud-actions">
+      <button id="btn-open-scanner-drawer" class="hud-btn primary-cta" title="Test Paper Camera Scanner side-by-side">
+        📷 Scan Sheet
+      </button>
+      <button id="btn-open-sheets-drawer" class="hud-btn secondary-cta" title="Print or test-color A4 coloring sheets">
+        🖨️ Coloring Sheets
+      </button>
+      <a href="./sheets.html" target="_blank" rel="noopener" class="hud-btn" title="Open Printable A4 Sheets in New Tab">↗ Print Tab</a>
+      <button id="btn-feed" class="hud-btn">🍤 Feed</button>
+      <button id="btn-shark" class="hud-btn">🦈 Shark!</button>
+      <button id="btn-labels" class="hud-btn active-pill">🏷️ Names</button>
+      <button id="btn-demo-toggle" class="hud-btn active-pill">🎨 Demo Fish</button>
+      <button id="btn-sound" class="hud-btn">🔊 Sound</button>
+      <button id="btn-fullscreen" class="hud-btn">⛶ Fullscreen</button>
+    </div>
+  </header>
+
+  <!-- Celebratory New Fish Arrival Banner -->
+  <div id="arrival-toast" class="arrival-toast"></div>
+
+  <!-- Interactive Hint Pill -->
+  <div class="tank-hint-pill">
+    💡 Click water to drop fish food • Click any fish to see its scanned sheet • Drag to look around
+  </div>
+
+  <!-- Creature Click Spotlight Card -->
+  <div id="fish-inspect-card" class="inspect-card hidden">
+    <img id="inspect-img" src="" alt="Scanned texture" />
+    <div>
+      <div id="inspect-title" style="font-weight: 700; font-size: 0.96rem; color: #5eead4;"></div>
+      <div id="inspect-sub" style="font-size: 0.78rem; color: #cbd5e1; margin-top: 3px;"></div>
+    </div>
+    <button id="close-inspect" class="inspect-close" aria-label="Close">✕</button>
+  </div>
+
+  <!-- Bottom-Right Phone QR Code Card -->
+  <aside id="qr-card" class="qr-card">
+    <div class="qr-header">
+      <span>📱 Scan with Phone</span>
+      <button id="btn-toggle-qr" class="qr-toggle-btn" title="Minimize / Expand">▾</button>
+    </div>
+    <div class="qr-body">
+      <div class="qr-img-box">
+        <img id="qr-code-img" alt="Scan QR Code to open Paper Scanner" />
+      </div>
+      <div class="qr-caption">
+        Color a printed sheet &amp; scan with your phone camera to watch it swim here live!
+      </div>
+      <div id="scan-url-text" class="qr-url"></div>
+    </div>
+  </aside>
+
+  <!-- Built-in Split-Screen Studio Drawer -->
+  <section id="studio-drawer" class="studio-drawer hidden">
+    <div class="drawer-header">
+      <span>✨ Live Scanner &amp; Coloring Sheet Studio</span>
+      <div style="display: flex; gap: 6px; align-items: center;">
+        <button onclick="document.getElementById('studio-iframe').src='./sheets.html'" class="hud-btn" style="padding: 4px 10px; font-size: 0.75rem;">🖍️ Sheets</button>
+        <button onclick="document.getElementById('studio-iframe').src='./scan.html'" class="hud-btn" style="padding: 4px 10px; font-size: 0.75rem;">📷 Scanner</button>
+        <button id="btn-close-drawer" class="hud-btn" style="padding: 4px 9px; font-size: 0.75rem;">✕</button>
+      </div>
+    </div>
+    <iframe id="studio-iframe" src="about:blank" allow="camera *"></iframe>
+  </section>
+
+  <script type="module" src="./js/aquarium.js"></script>
+</body>
+</html>
