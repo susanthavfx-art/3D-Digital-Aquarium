@@ -26,31 +26,22 @@ export const SPECIES_LIST = [
     baseScale: 1.12
   },
   {
+    id: 'bluetang',
+    name: 'Blue Reef Fish',
+    sinhala: 'නිල් මාළුවා (Blue Fish)',
+    emoji: '🐟',
+    badgeColor: '#2563eb',
+    swimZone: 'high',
+    baseScale: 1.06
+  },
+  {
     id: 'seahorse',
     name: 'Seahorse',
     sinhala: 'මුහුදු අශ්වයා (Seahorse)',
     emoji: '🪸',
     badgeColor: '#ff9f1c',
     swimZone: 'mid',
-    baseScale: 1.08
-  },
-  {
-    id: 'turtle',
-    name: 'Sea Turtle',
-    sinhala: 'මුහුදු කැස්බෑවා (Sea Turtle)',
-    emoji: '🐢',
-    badgeColor: '#2ec4b6',
-    swimZone: 'high',
-    baseScale: 1.25
-  },
-  {
-    id: 'jellyfish',
-    name: 'Glowing Jellyfish',
-    sinhala: 'ජෙලිෆිෂ් (Jellyfish)',
-    emoji: '🪼',
-    badgeColor: '#b5179e',
-    swimZone: 'float',
-    baseScale: 1.08
+    baseScale: 1.10
   },
   {
     id: 'starfish',
@@ -59,15 +50,115 @@ export const SPECIES_LIST = [
     emoji: '⭐',
     badgeColor: '#ffbe0b',
     swimZone: 'reef',
-    baseScale: 0.92
+    baseScale: 0.96
   },
   ...(Array.isArray(EXTRA_CUSTOM_SPECIES) ? EXTRA_CUSTOM_SPECIES : [])
 ];
 
-// Runtime caches for optional custom Blender .glb models & 512x512 _template.png sheets
+// Runtime caches for custom .glb models, 512x512 _template.png sheets, masks, & colored references
 const cachedCreatureGltfs = new Map();
 const cachedTemplateImages = new Map();
-let preloadPromise = null;
+const cachedTemplateMasks = new Map();
+const cachedColoredImages = new Map();
+let imagesPreloadPromise = null;
+let gltfsPreloadPromise = null;
+
+function buildSilhouetteMaskFromTemplateImage(img) {
+  if (typeof document === 'undefined') return null;
+  const W = 512;
+  const H = 512;
+  const tmp = document.createElement('canvas');
+  tmp.width = W;
+  tmp.height = H;
+  const tctx = tmp.getContext('2d');
+  tctx.fillStyle = '#ffffff';
+  tctx.fillRect(0, 0, W, H);
+  tctx.drawImage(img, 0, 0, W, H);
+  const src = tctx.getImageData(0, 0, W, H).data;
+
+  // Dilate dark ink barrier by 1px so anti-aliased strokes are 100% watertight against exterior flood-fill
+  const dark = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const k = i * 4;
+    const lum = (src[k] + src[k + 1] + src[k + 2]) / 3;
+    if (lum < 165) dark[i] = 1;
+  }
+  const barrier = new Uint8Array(W * H);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const idx = y * W + x;
+      if (
+        dark[idx] ||
+        (x > 0 && dark[idx - 1]) ||
+        (x + 1 < W && dark[idx + 1]) ||
+        (y > 0 && dark[idx - W]) ||
+        (y + 1 < H && dark[idx + W])
+      ) {
+        barrier[idx] = 1;
+      }
+    }
+  }
+
+  // BFS exterior flood-fill from all 4 border edges
+  const outside = new Uint8Array(W * H);
+  const queue = new Int32Array(W * H);
+  let qHead = 0;
+  let qTail = 0;
+  const pushSeed = (x, y) => {
+    const idx = y * W + x;
+    if (!outside[idx] && !barrier[idx]) {
+      outside[idx] = 1;
+      queue[qTail++] = idx;
+    }
+  };
+  for (let x = 0; x < W; x++) {
+    pushSeed(x, 0);
+    pushSeed(x, H - 1);
+  }
+  for (let y = 0; y < H; y++) {
+    pushSeed(0, y);
+    pushSeed(W - 1, y);
+  }
+  while (qHead < qTail) {
+    const cur = queue[qHead++];
+    const cx = cur % W;
+    const cy = (cur / W) | 0;
+    if (cx > 0) {
+      const n = cur - 1;
+      if (!outside[n] && !barrier[n]) { outside[n] = 1; queue[qTail++] = n; }
+    }
+    if (cx + 1 < W) {
+      const n = cur + 1;
+      if (!outside[n] && !barrier[n]) { outside[n] = 1; queue[qTail++] = n; }
+    }
+    if (cy > 0) {
+      const n = cur - W;
+      if (!outside[n] && !barrier[n]) { outside[n] = 1; queue[qTail++] = n; }
+    }
+    if (cy + 1 < H) {
+      const n = cur + W;
+      if (!outside[n] && !barrier[n]) { outside[n] = 1; queue[qTail++] = n; }
+    }
+  }
+
+  const maskCanvas = document.createElement('canvas');
+  maskCanvas.width = W;
+  maskCanvas.height = H;
+  const mctx = maskCanvas.getContext('2d');
+  const outImg = mctx.createImageData(W, H);
+  const od = outImg.data;
+  for (let i = 0; i < W * H; i++) {
+    if (!outside[i]) {
+      const k = i * 4;
+      od[k] = 255;
+      od[k + 1] = 255;
+      od[k + 2] = 255;
+      od[k + 3] = 255;
+    }
+  }
+  mctx.putImageData(outImg, 0, 0);
+  return maskCanvas;
+}
 
 export function getCreatureOverrideConfig(speciesId) {
   const extra = (EXTRA_CUSTOM_SPECIES || []).find((s) => s.id === speciesId);
@@ -79,62 +170,75 @@ export function hasCustomTemplate(speciesId) {
 }
 
 export function preloadCustomCreatureAssets(GLTFLoaderClass = null) {
-  if (preloadPromise) return preloadPromise;
-  if (typeof window === 'undefined' || typeof fetch === 'undefined') {
+  if (typeof window === 'undefined') {
     return Promise.resolve();
   }
 
-  const loader = GLTFLoaderClass ? new GLTFLoaderClass() : null;
-  const tasks = [];
+  if (!imagesPreloadPromise) {
+    const imgTasks = [];
+    for (const sp of SPECIES_LIST) {
+      const cfg = getCreatureOverrideConfig(sp.id);
+      if (!cfg) continue;
 
-  for (const sp of SPECIES_LIST) {
-    const cfg = getCreatureOverrideConfig(sp.id);
-    if (!cfg) continue;
-
-    if (cfg.templateUrl) {
-      tasks.push(
-        fetch(cfg.templateUrl, { method: 'HEAD' })
-          .then((res) => {
-            if (!res.ok) return;
-            return new Promise((resolve) => {
-              const img = new Image();
-              img.crossOrigin = 'anonymous';
-              img.onload = () => {
-                cachedTemplateImages.set(sp.id, img);
-                resolve();
-              };
-              img.onerror = () => resolve();
-              img.src = cfg.templateUrl;
-            });
+      if (cfg.templateUrl) {
+        imgTasks.push(
+          new Promise((resolve) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+              cachedTemplateImages.set(sp.id, img);
+              const maskC = buildSilhouetteMaskFromTemplateImage(img);
+              if (maskC) cachedTemplateMasks.set(sp.id, maskC);
+              resolve();
+            };
+            img.onerror = () => resolve();
+            img.src = cfg.templateUrl;
           })
-          .catch(() => {})
-      );
-    }
+        );
+      }
 
-    if (cfg.glbUrl && loader) {
-      tasks.push(
-        fetch(cfg.glbUrl, { method: 'HEAD' })
-          .then((res) => {
-            if (!res.ok) return;
-            return new Promise((resolve) => {
-              loader.load(
-                cfg.glbUrl,
-                (gltf) => {
-                  cachedCreatureGltfs.set(sp.id, gltf);
-                  resolve();
-                },
-                undefined,
-                () => resolve()
-              );
-            });
+      if (cfg.coloredUrl) {
+        imgTasks.push(
+          new Promise((resolve) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => {
+              cachedColoredImages.set(sp.id, img);
+              resolve();
+            };
+            img.onerror = () => resolve();
+            img.src = cfg.coloredUrl;
           })
-          .catch(() => {})
-      );
+        );
+      }
     }
+    imagesPreloadPromise = Promise.all(imgTasks);
   }
 
-  preloadPromise = Promise.all(tasks);
-  return preloadPromise;
+  if (GLTFLoaderClass && !gltfsPreloadPromise) {
+    const loader = new GLTFLoaderClass();
+    const glbTasks = [];
+    for (const sp of SPECIES_LIST) {
+      const cfg = getCreatureOverrideConfig(sp.id);
+      if (!cfg?.glbUrl) continue;
+      glbTasks.push(
+        new Promise((resolve) => {
+          loader.load(
+            cfg.glbUrl,
+            (gltf) => {
+              cachedCreatureGltfs.set(sp.id, gltf);
+              resolve();
+            },
+            undefined,
+            () => resolve()
+          );
+        })
+      );
+    }
+    gltfsPreloadPromise = Promise.all(glbTasks);
+  }
+
+  return Promise.all([imagesPreloadPromise, gltfsPreloadPromise].filter(Boolean));
 }
 
 export function getSpeciesMeta(speciesId) {
@@ -280,8 +384,13 @@ export function drawCreatureSilhouette(ctx, species, size = 512, mode = 'outline
   if (customImg) {
     ctx.save();
     if (mode === 'mask') {
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, size, size);
+      const maskC = cachedTemplateMasks.get(species);
+      if (maskC) {
+        ctx.drawImage(maskC, 0, 0, size, size);
+      } else {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, size, size);
+      }
     } else {
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, size, size);
@@ -823,21 +932,25 @@ export function buildCustomGlbCreatureMesh(THREE, gltf, species, texture, overri
   gltfTex.needsUpdate = true;
 
   const clonedRoot = SkeletonUtils.clone(gltf.scene);
+  clonedRoot.updateMatrixWorld(true);
 
-  // Normalize bounding box size & center, then orient local forward to +X
+  // Normalize bounding box size & center accurately even for 0.01-scale Maya/FBX rigs!
   const rawBox = new THREE.Box3().setFromObject(clonedRoot);
   const rawSize = new THREE.Vector3();
-  const rawCenter = new THREE.Vector3();
   rawBox.getSize(rawSize);
-  rawBox.getCenter(rawCenter);
 
   const maxDim = Math.max(rawSize.x, rawSize.y, rawSize.z, 0.001);
   const targetSize = overrideCfg.targetSize || 2.5;
   const normScale = targetSize / maxDim;
 
-  const orientPivot = new THREE.Group();
-  clonedRoot.position.sub(rawCenter);
   clonedRoot.scale.multiplyScalar(normScale);
+  clonedRoot.updateMatrixWorld(true);
+  const scaledBox = new THREE.Box3().setFromObject(clonedRoot);
+  const scaledCenter = new THREE.Vector3();
+  scaledBox.getCenter(scaledCenter);
+  clonedRoot.position.sub(scaledCenter);
+
+  const orientPivot = new THREE.Group();
   orientPivot.add(clonedRoot);
 
   const rotY = ((overrideCfg.facingOffsetDegY ?? 180) * Math.PI) / 180;
@@ -868,7 +981,12 @@ export function buildCustomGlbCreatureMesh(THREE, gltf, species, texture, overri
       child.geometry = child.geometry.clone();
       const posAttr = child.geometry.attributes.position;
       const gBox = new THREE.Box3().setFromBufferAttribute(posAttr);
-      const span = Math.max(gBox.max.x - gBox.min.x, gBox.max.y - gBox.min.y, gBox.max.z - gBox.min.z, 0.001);
+      const spanX = Math.max(gBox.max.x - gBox.min.x, 0.001);
+      const spanY = Math.max(gBox.max.y - gBox.min.y, 0.001);
+      const span = Math.max(spanX, spanY, gBox.max.z - gBox.min.z, 0.001);
+      const swimStyle = overrideCfg.swimStyle || (species === 'starfish' ? 'starfish' : species === 'seahorse' ? 'seahorse' : 'fish');
+      const facesLeftInMesh = Math.abs((overrideCfg.facingOffsetDegY ?? 0) - 180) < 45;
+
       const base = new Float32Array(posAttr.count * 4);
       for (let i = 0; i < posAttr.count; i++) {
         const vx = posAttr.getX(i);
@@ -877,11 +995,26 @@ export function buildCustomGlbCreatureMesh(THREE, gltf, species, texture, overri
         base[i * 4] = vx;
         base[i * 4 + 1] = vy;
         base[i * 4 + 2] = vz;
-        // Normalized longitudinal coordinate for gentle swim undulation
-        base[i * 4 + 3] = Math.hypot(vx, vy) / span;
+
+        if (swimStyle === 'fish') {
+          // u = 0 at nose -> 1 at tail tip!
+          base[i * 4 + 3] = facesLeftInMesh
+            ? (vx - gBox.min.x) / spanX
+            : (gBox.max.x - vx) / spanX;
+        } else if (swimStyle === 'seahorse') {
+          // u = 0 at head/crown -> 1 at curled tail; add +10 flag if vertex is on back dorsal fan fin!
+          const uSpine = (gBox.max.y - vy) / spanY;
+          const xBack = facesLeftInMesh ? (vx - gBox.min.x) / spanX : (gBox.max.x - vx) / spanX;
+          const isDorsalFin = xBack > 0.62 && uSpine > 0.42 && uSpine < 0.78;
+          base[i * 4 + 3] = isDorsalFin ? 10.0 + (xBack - 0.62) / 0.38 : uSpine;
+        } else {
+          // Radial distance from center for starfish arm flexing
+          base[i * 4 + 3] = Math.min(1.0, Math.hypot(vx, vy) / (span * 0.5));
+        }
       }
       child.geometry.userData.basePositions = base;
-      child.geometry.userData.waveAmp = span * 0.075;
+      child.geometry.userData.swimStyle = swimStyle;
+      child.geometry.userData.waveAmp = span * 0.105;
       group.userData.animParts.waveMeshes.push(child);
     }
 
@@ -891,6 +1024,7 @@ export function buildCustomGlbCreatureMesh(THREE, gltf, species, texture, overri
       child.material = scannedMat;
     }
     child.castShadow = true;
+    child.frustumCulled = false; // Prevent scaled Maya/Blender SkinnedMeshes from culling prematurely
   });
 
   if (hasClips) {
@@ -898,6 +1032,7 @@ export function buildCustomGlbCreatureMesh(THREE, gltf, species, texture, overri
     for (const clip of gltf.animations) {
       mixer.clipAction(clip).play();
     }
+    mixer.update(Math.random() * 1.2);
     group.userData.mixer = mixer;
     group.userData.lastAnimTime = null;
   }
@@ -1625,15 +1760,51 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
     if (waveMeshes && waveMeshes.length > 0) {
       for (const m of waveMeshes) {
         const base = m.geometry.userData.basePositions;
-        const amp = m.geometry.userData.waveAmp || 0.08;
+        const amp = m.geometry.userData.waveAmp || 0.12;
+        const swimStyle = m.geometry.userData.swimStyle || 'fish';
         const pos = m.geometry.attributes.position;
         const arr = pos.array;
-        for (let i = 0, k = 0; i < base.length; i += 4, k += 3) {
-          const u = base[i + 3];
-          const w = Math.sin(time * 4.8 * speedBoost - u * 4.0) * amp * u;
-          arr[k] = base[i];
-          arr[k + 1] = base[i + 1];
-          arr[k + 2] = base[i + 2] + w;
+
+        if (swimStyle === 'fish') {
+          const freq = (meshGroup.userData.species === 'angelfish' ? 5.6 : 6.8) * speedBoost;
+          for (let i = 0, k = 0; i < base.length; i += 4, k += 3) {
+            const u = base[i + 3]; // 0 at nose -> 1 at tail tip
+            const tailFlex = Math.pow(u, 1.85);
+            const w = Math.sin(time * freq - u * 4.6) * amp * tailFlex;
+            arr[k] = base[i];
+            arr[k + 1] = base[i + 1];
+            arr[k + 2] = base[i + 2] + w;
+          }
+        } else if (swimStyle === 'seahorse') {
+          for (let i = 0, k = 0; i < base.length; i += 4, k += 3) {
+            const code = base[i + 3];
+            if (code >= 10.0) {
+              // Rapid fluttering back fan dorsal fin!
+              const finSpan = code - 10.0;
+              const flutter = Math.sin(time * 16.5 * speedBoost - finSpan * 2.5) * (amp * 0.85) * finSpan;
+              arr[k] = base[i];
+              arr[k + 1] = base[i + 1];
+              arr[k + 2] = base[i + 2] + flutter;
+            } else {
+              const tailFlex = Math.pow(code, 1.6);
+              const sway = Math.sin(time * 3.6 * speedBoost - code * 3.8) * (amp * 0.65) * tailFlex;
+              arr[k] = base[i];
+              arr[k + 1] = base[i + 1];
+              arr[k + 2] = base[i + 2] + sway;
+            }
+          }
+        } else {
+          // Starfish gentle 5-arm ocean wave
+          for (let i = 0, k = 0; i < base.length; i += 4, k += 3) {
+            const bx = base[i];
+            const by = base[i + 1];
+            const rNorm = base[i + 3];
+            const ang = Math.atan2(by, bx);
+            const curl = Math.sin(time * 2.3 + ang * 2.5) * (amp * 0.72) * Math.pow(rNorm, 1.5);
+            arr[k] = bx;
+            arr[k + 1] = by;
+            arr[k + 2] = base[i + 2] + curl;
+          }
         }
         pos.needsUpdate = true;
       }
@@ -1791,6 +1962,54 @@ export function generateHandColoredCanvas(species, palette, includePaperSheet = 
   canvas.width = 512;
   canvas.height = 512;
   const ctx = canvas.getContext('2d');
+
+  // If we have the artist-colored reference image for this custom species, use it directly!
+  const customColImg = cachedColoredImages.get(species);
+  if (customColImg) {
+    if (!includePaperSheet) {
+      ctx.drawImage(customColImg, 0, 0, 512, 512);
+      return canvas;
+    }
+    // For simulated paper desk scans: white paper outside silhouette + colored creature + subtle crayon texture!
+    ctx.fillStyle = '#fdfcf7';
+    ctx.fillRect(0, 0, 512, 512);
+
+    const fg = document.createElement('canvas');
+    fg.width = 512;
+    fg.height = 512;
+    const fctx = fg.getContext('2d');
+    fctx.drawImage(customColImg, 0, 0, 512, 512);
+
+    // Add realistic kid crayon stroke texture
+    fctx.globalAlpha = 0.14;
+    for (let i = 0; i < 420; i++) {
+      const rx = Math.random() * 512;
+      const ry = Math.random() * 512;
+      fctx.strokeStyle = i % 2 === 0 ? '#ffffff' : (palette?.[i % palette.length] || '#ffd166');
+      fctx.lineWidth = 2 + Math.random() * 3.5;
+      fctx.beginPath();
+      fctx.moveTo(rx, ry);
+      fctx.lineTo(rx + 12 + Math.random() * 12, ry - 10 - Math.random() * 10);
+      fctx.stroke();
+    }
+    fctx.globalAlpha = 1.0;
+
+    const maskC = cachedTemplateMasks.get(species);
+    if (maskC) {
+      fctx.globalCompositeOperation = 'destination-in';
+      fctx.drawImage(maskC, 0, 0, 512, 512);
+    }
+    ctx.drawImage(fg, 0, 0);
+
+    const tmplImg = cachedTemplateImages.get(species);
+    if (tmplImg) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'multiply';
+      ctx.drawImage(tmplImg, 0, 0, 512, 512);
+      ctx.restore();
+    }
+    return canvas;
+  }
 
   if (includePaperSheet) {
     ctx.fillStyle = '#fdfcf7';
