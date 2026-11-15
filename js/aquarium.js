@@ -180,7 +180,7 @@ class DigitalAquariumApp {
       },
       undefined,
       () => {
-        this.bgTextureLoader.load('./assets/underwater-bg.jpg?v=2', (tex) => {
+        this.bgTextureLoader.load('./assets/underwater-bg.jpg', (tex) => {
           tex.colorSpace = THREE.SRGBColorSpace;
           this.scene.background = tex;
         });
