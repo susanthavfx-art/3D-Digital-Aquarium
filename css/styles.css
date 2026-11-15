@@ -105,6 +105,83 @@ body.aquarium-body {
   font-weight: 600;
 }
 
+/* WonderLab AR Brand Logo */
+.brand-logo {
+  height: 26px;
+  width: auto;
+  max-width: 150px;
+  object-fit: contain;
+  display: block;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.45));
+}
+
+.sub-logo {
+  height: 20px;
+  max-width: 120px;
+}
+
+.sub-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+/* ==========================================================================
+   TOP BAR COMPACT STYLING & MINIMIZE STATE
+   ========================================================================== */
+
+.top-hud {
+  transition: top 0.28s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.28s ease;
+}
+
+.top-hud.collapsed {
+  top: 10px;
+  left: 10px;
+  right: auto;
+  pointer-events: auto;
+}
+
+.top-hud.collapsed .brand-pill,
+.top-hud.collapsed .hud-actions .hud-btn {
+  display: none !important;
+}
+
+.top-hud.collapsed .hud-actions {
+  background: var(--glass-bg);
+  border-radius: 999px;
+  padding: 4px 10px;
+  gap: 0;
+}
+
+.top-hud.collapsed .hud-actions .hud-collapse-btn {
+  display: inline-flex !important;
+  font-size: 1rem;
+  padding: 4px 11px;
+}
+
+/* Compact glass buttons */
+.top-hud .hud-btn {
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 5px 10px;
+  gap: 4px;
+}
+
+.top-hud .brand-pill {
+  padding: 6px 14px 6px 10px;
+  gap: 8px;
+}
+
+.top-hud .brand-title {
+  font-size: 0.92rem;
+}
+
+.hud-collapse-btn {
+  font-size: 0.82rem;
+  padding: 5px 9px;
+}
+
 .hud-btn {
   appearance: none;
   border: 1px solid rgba(148, 163, 184, 0.22);
