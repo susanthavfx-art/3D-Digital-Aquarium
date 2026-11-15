@@ -169,16 +169,18 @@ class DigitalAquariumApp {
 
     // Underwater Fish Tank Background Image (PNG primary since it's guaranteed on the live repo;
     // JPEG fallback if the full-quality PNG is ever unavailable)
+    // Cache-busting version param forces browsers to re-fetch the fresh background,
+    // avoiding stale cached copies after updates.
     this.bgTextureLoader = new THREE.TextureLoader();
     this.bgTextureLoader.load(
-      './assets/underwater-bg.png',
+      './assets/underwater-bg.png?v=2',
       (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace;
         this.scene.background = tex;
       },
       undefined,
       () => {
-        this.bgTextureLoader.load('./assets/underwater-bg.jpg', (tex) => {
+        this.bgTextureLoader.load('./assets/underwater-bg.jpg?v=2', (tex) => {
           tex.colorSpace = THREE.SRGBColorSpace;
           this.scene.background = tex;
         });
