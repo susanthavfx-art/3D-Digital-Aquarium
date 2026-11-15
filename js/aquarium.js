@@ -167,6 +167,18 @@ class DigitalAquariumApp {
     this.scene.background = new THREE.Color(0x041e3a);
     this.scene.fog = new THREE.FogExp2(0x062c52, 0.026);
 
+    // Underwater Fish Tank Background Image (loaded async, keeps color until ready)
+    this.bgTextureLoader = new THREE.TextureLoader();
+    this.bgTextureLoader.load(
+      './assets/underwater-bg.png',
+      (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace;
+        this.scene.background = tex;
+      },
+      undefined,
+      () => { /* keep default deep-blue fallback if missing */ }
+    );
+
     const w = window.innerWidth;
     const h = window.innerHeight;
     this.camera = new THREE.PerspectiveCamera(46, w / h, 0.1, 120);
@@ -686,13 +698,16 @@ class DigitalAquariumApp {
   buildAmbientBubbles() {
     const count = 160;
     const geom = new THREE.SphereGeometry(0.085, 10, 8);
+    // Natural underwater bubbles: milky translucent white with a cool blue tint & bright highlight
     const mat = new THREE.MeshPhysicalMaterial({
-      color: 0xdff9ff,
-      transmission: 0.65,
+      color: 0xe9f4fb,
+      transmission: 0.92,
       transparent: true,
-      opacity: 0.55,
-      roughness: 0.08,
-      metalness: 0.1
+      opacity: 0.42,
+      roughness: 0.14,
+      metalness: 0.04,
+      clearcoat: 0.9,
+      clearcoatRoughness: 0.12
     });
     this.bubbleInst = new THREE.InstancedMesh(geom, mat, count);
     this.bubbleData = [];
@@ -1214,6 +1229,18 @@ class DigitalAquariumApp {
         document.documentElement.requestFullscreen?.().catch(() => {});
       } else {
         document.exitFullscreen?.().catch(() => {});
+      }
+    });
+
+    // Minimize / Collapse the top menu bar for a clean tank view
+    document.getElementById('btn-collapse-hud')?.addEventListener('click', (e) => {
+      const hud = document.getElementById('top-hud');
+      if (hud) {
+        hud.classList.toggle('collapsed');
+        e.currentTarget.textContent = hud.classList.contains('collapsed') ? '▴' : '▾';
+        e.currentTarget.title = hud.classList.contains('collapsed')
+          ? 'Expand menu bar'
+          : 'Minimize menu bar';
       }
     });
 
