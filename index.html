@@ -19,8 +19,9 @@
   <div id="aquarium-canvas-wrap"></div>
 
   <!-- Top Glassmorphic Exhibition HUD -->
-  <header class="top-hud">
+  <header class="top-hud" id="top-hud">
     <div class="brand-pill">
+      <img src="./assets/wonderlab-ar-logo.png" alt="WonderLab AR" class="brand-logo" />
       <span id="live-status-dot" class="live-dot" title="Supabase Realtime Status"></span>
       <span class="brand-title">🐠 3D Digital Aquarium</span>
       <span id="fish-count-badge" class="count-badge">5 Sea Creatures</span>
@@ -31,20 +32,20 @@
         📷 Scan Sheet
       </button>
       <button id="btn-open-sheets-drawer" class="hud-btn secondary-cta" title="Print or test-color A4 coloring sheets">
-        🖨️ Coloring Sheets
+        🖨️ Sheets
       </button>
-      <a href="./sheets.html" target="_blank" rel="noopener" class="hud-btn" title="Open Printable A4 Sheets in New Tab">↗ Print Tab</a>
-      <button id="btn-feed" class="hud-btn">🍤 Feed</button>
-      <button id="btn-shark" class="hud-btn">🦈 Shark!</button>
-      <button id="btn-labels" class="hud-btn active-pill">🏷️ Names</button>
-      <button id="btn-demo-toggle" class="hud-btn active-pill">🎨 Demo Fish</button>
+      <button id="btn-feed" class="hud-btn" title="Drop fish food">🍤</button>
+      <button id="btn-shark" class="hud-btn" title="Summon visiting shark">🦈</button>
+      <button id="btn-labels" class="hud-btn active-pill" title="Toggle creature name badges">🏷️</button>
+      <button id="btn-demo-toggle" class="hud-btn active-pill" title="Toggle starter demo fish">🎨</button>
       <label class="hud-btn" style="cursor: pointer;" title="Preview your own Blender .glb tank model instantly!">
-        🧱 Test .GLB
+        🧱
         <input id="glb-test-input" type="file" accept=".glb,.gltf" class="hidden" />
       </label>
-      <button id="btn-reset-tank" class="hud-btn" title="Clear all fish &amp; start fresh">🧹 Reset</button>
-      <button id="btn-sound" class="hud-btn">🔊 Sound</button>
-      <button id="btn-fullscreen" class="hud-btn">⛶ Fullscreen</button>
+      <button id="btn-reset-tank" class="hud-btn" title="Clear all fish &amp; start fresh">🧹</button>
+      <button id="btn-sound" class="hud-btn" title="Toggle sound">🔊</button>
+      <button id="btn-fullscreen" class="hud-btn" title="Toggle fullscreen">⛶</button>
+      <button id="btn-collapse-hud" class="hud-btn hud-collapse-btn" title="Minimize / Expand menu bar">▾</button>
     </div>
   </header>
 
