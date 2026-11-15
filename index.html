@@ -137,10 +137,11 @@
       <div style="display: flex; gap: 6px; align-items: center;">
         <button onclick="document.getElementById('studio-iframe').src='./sheets.html'" class="hud-btn" style="padding: 4px 10px; font-size: 0.75rem;">🖍️ Sheets</button>
         <button onclick="document.getElementById('studio-iframe').src='./scan.html'" class="hud-btn" style="padding: 4px 10px; font-size: 0.75rem;">📷 Scanner</button>
+        <a href="./scan.html" target="_blank" rel="noopener" class="hud-btn" style="padding: 4px 10px; font-size: 0.75rem; text-decoration: none;" title="Open Scanner in Full Tab">↗ Tab</a>
         <button id="btn-close-drawer" class="hud-btn" style="padding: 4px 9px; font-size: 0.75rem;">✕</button>
       </div>
     </div>
-    <iframe id="studio-iframe" src="about:blank" allow="camera *"></iframe>
+    <iframe id="studio-iframe" src="about:blank" allow="camera; microphone; fullscreen; autoplay"></iframe>
   </section>
 
   <script type="module" src="./js/aquarium.js"></script>

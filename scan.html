@@ -34,7 +34,7 @@
       <!-- Live Camera Box -->
       <div id="camera-live-box" class="hidden">
         <div class="camera-stage">
-          <video id="camera-video" playsinline muted autoplay></video>
+          <video id="camera-video" playsinline webkit-playsinline muted autoplay></video>
           <canvas id="camera-overlay"></canvas>
           <div id="live-detect-status" class="detect-banner">
             🔍 Align the 4 black corner squares...
@@ -44,7 +44,10 @@
           <button id="btn-shutter" class="btn-block btn-gradient-teal" style="flex: 1;">
             📸 Capture &amp; Make 3D!
           </button>
-          <button id="btn-stop-camera" class="btn-block btn-outline" style="width: auto; padding: 13px 16px;">
+          <button id="btn-switch-camera" class="btn-block btn-outline" style="width: auto; padding: 13px 14px;" title="Switch / Flip Camera">
+            🔄
+          </button>
+          <button id="btn-stop-camera" class="btn-block btn-outline" style="width: auto; padding: 13px 16px;" title="Close Camera">
             ✕
           </button>
         </div>
@@ -56,10 +59,25 @@
           📷 Open Live Camera Scanner
         </button>
 
-        <label class="btn-block btn-outline" style="cursor: pointer;">
-          🖼️ Take / Upload Sheet Photo
-          <input id="file-upload-input" type="file" accept="image/*" capture="environment" class="hidden" />
-        </label>
+        <div id="camera-error-box" class="hidden" style="margin-bottom: 12px; padding: 12px 14px; border-radius: 12px; background: rgba(239, 68, 68, 0.14); border: 1px solid rgba(248, 113, 113, 0.45); color: #fecaca; font-size: 0.8rem; line-height: 1.45;">
+          <div id="camera-error-text" style="margin-bottom: 8px;"></div>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <a href="./scan.html" target="_blank" rel="noopener" class="hud-btn" style="text-decoration: none; padding: 6px 12px; font-size: 0.76rem; background: rgba(56, 189, 248, 0.22); border-color: rgba(56, 189, 248, 0.5); color: #e0f2fe;">
+              ↗ Open Scanner in Full Tab
+            </a>
+          </div>
+        </div>
+
+        <div style="display: flex; gap: 8px;">
+          <label class="btn-block btn-outline" style="cursor: pointer; flex: 1; text-align: center;">
+            📱 Phone Camera
+            <input id="camera-capture-input" type="file" accept="image/*" capture="environment" class="hidden" />
+          </label>
+          <label class="btn-block btn-outline" style="cursor: pointer; flex: 1; text-align: center;">
+            🖼️ Upload Photo
+            <input id="file-upload-input" type="file" accept="image/*" class="hidden" />
+          </label>
+        </div>
       </div>
 
       <div class="divider-label">— OR TEST WITHOUT A PRINTER RIGHT NOW —</div>
