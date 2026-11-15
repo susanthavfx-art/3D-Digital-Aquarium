@@ -167,16 +167,22 @@ class DigitalAquariumApp {
     this.scene.background = new THREE.Color(0x041e3a);
     this.scene.fog = new THREE.FogExp2(0x062c52, 0.026);
 
-    // Underwater Fish Tank Background Image (loaded async, keeps color until ready)
+    // Underwater Fish Tank Background Image (fast-loading JPEG, keeps color until ready)
     this.bgTextureLoader = new THREE.TextureLoader();
     this.bgTextureLoader.load(
-      './assets/underwater-bg.png',
+      './assets/underwater-bg.jpg',
       (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace;
         this.scene.background = tex;
       },
       undefined,
-      () => { /* keep default deep-blue fallback if missing */ }
+      () => {
+        // Fallback to full-size PNG if JPEG is somehow missing
+        this.bgTextureLoader.load('./assets/underwater-bg.png', (tex) => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          this.scene.background = tex;
+        });
+      }
     );
 
     const w = window.innerWidth;
