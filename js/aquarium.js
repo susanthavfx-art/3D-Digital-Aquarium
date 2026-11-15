@@ -125,11 +125,10 @@ const TANK_BOUNDS = { x: 13.5, yMin: -4.6, yMax: 5.2, zMin: -7.5, zMax: 4.5 };
 
 const STARTER_FISH_SPECS = [
   { id: 'demo-1', name: 'Kasun', species: 'clownfish', palette: ['#ff6b1a', '#ff8c42', '#ff4d00', '#ffffff'], isDemo: true },
-  { id: 'demo-2', name: 'Nethmi', species: 'turtle', palette: ['#2ec4b6', '#52b788', '#ffd166', '#cbf3f0'], isDemo: true },
-  { id: 'demo-3', name: 'Kavindu', species: 'angelfish', palette: ['#00bbf9', '#fee440', '#9b5de5', '#ffffff'], isDemo: true },
-  { id: 'demo-4', name: 'Hiruni', species: 'jellyfish', palette: ['#f72585', '#b5179e', '#4cc9f0', '#fff3b0'], isDemo: true },
-  { id: 'demo-5', name: 'Sahan', species: 'starfish', palette: ['#ffbe0b', '#fb5607', '#ff006e', '#fff8d6'], isDemo: true },
-  { id: 'demo-6', name: 'Amaya', species: 'seahorse', palette: ['#ff9f1c', '#ff5d8f', '#ffd166', '#00f5d4'], isDemo: true }
+  { id: 'demo-2', name: 'Kavindu', species: 'angelfish', palette: ['#00bbf9', '#fee440', '#ff9f1c', '#ffffff'], isDemo: true },
+  { id: 'demo-3', name: 'Nethmi', species: 'bluetang', palette: ['#0077b6', '#00b4d8', '#48cae4', '#ffffff'], isDemo: true },
+  { id: 'demo-4', name: 'Amaya', species: 'seahorse', palette: ['#ff9f1c', '#ffd166', '#2ec4b6', '#ff5d8f'], isDemo: true },
+  { id: 'demo-5', name: 'Sahan', species: 'starfish', palette: ['#ff6b35', '#ffbe0b', '#fb5607', '#ffffff'], isDemo: true }
 ];
 
 class DigitalAquariumApp {

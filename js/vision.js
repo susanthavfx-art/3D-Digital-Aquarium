@@ -20,10 +20,9 @@ const CODE_DOT_Y = 40;
 const SPECIES_BITS = {
   clownfish: [1, 0, 0, 1, 0, 1],
   angelfish: [1, 0, 1, 0, 0, 1],
-  turtle:    [1, 0, 1, 1, 0, 1],
-  jellyfish: [1, 1, 0, 0, 0, 1],
-  starfish:  [1, 1, 0, 1, 0, 1],
-  seahorse:  [1, 1, 1, 0, 0, 1]
+  bluetang:  [1, 0, 1, 1, 0, 1],
+  seahorse:  [1, 1, 1, 0, 0, 1],
+  starfish:  [1, 1, 0, 1, 0, 1]
 };
 
 if (Array.isArray(EXTRA_CUSTOM_SPECIES)) {

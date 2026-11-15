@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { OrbitControls } from '../vendor/OrbitControls.js';
+import { GLTFLoader } from '../vendor/GLTFLoader.js';
 import {
   SPECIES_LIST,
   getSpeciesMeta,
   buildCreatureMesh,
   animateCreatureMesh,
-  generateHandColoredCanvas
+  generateHandColoredCanvas,
+  preloadCustomCreatureAssets
 } from './creatures.js';
 import {
   detectSheetCorners,
@@ -20,10 +22,10 @@ import {
 
 const SAMPLE_PALETTES = {
   clownfish: ['#ff5400', '#ff8500', '#ffbd00', '#ffffff'],
-  angelfish: ['#00bbf9', '#f15bb5', '#fee440', '#ffffff'],
-  turtle: ['#06d6a0', '#118ab2', '#ffd166', '#e9ff70'],
-  jellyfish: ['#f72585', '#7209b7', '#4cc9f0', '#fff3b0'],
-  starfish: ['#ffbe0b', '#fb5607', '#ff006e', '#ffffff']
+  angelfish: ['#00bbf9', '#fee440', '#ff9f1c', '#ffffff'],
+  bluetang: ['#0077b6', '#00b4d8', '#48cae4', '#ffffff'],
+  seahorse: ['#ff9f1c', '#ffd166', '#2ec4b6', '#ff5d8f'],
+  starfish: ['#ff6b35', '#fb5607', '#ffbe0b', '#ffffff']
 };
 
 class PaperScannerApp {
@@ -54,15 +56,26 @@ class PaperScannerApp {
     this.arMode = false;
     this.arVideo = document.getElementById('ar-bg-video');
     this.clock = new THREE.Clock();
-    this.gltfLoader = new GLTFLoader();
     this.userTestGltf = null;
 
+    // Camera device switching state (phones + multi-webcam PCs)
+    this.facingMode = 'environment';
+    this.videoDevices = [];
+    this.activeDeviceIndex = -1;
+
+    // Bind UI event listeners FIRST so buttons always respond immediately!
     this.initUI();
-    this.init3DPreviewStage();
-    preloadCustomCreatureAssets(GLTFLoader).then(() => {
-      this.checkIncomingVirtualSheet();
-      if (this.uvCanvas) this.update3DPreviewMesh();
-    });
+
+    try {
+      this.gltfLoader = new GLTFLoader();
+      this.init3DPreviewStage();
+      preloadCustomCreatureAssets(GLTFLoader).then(() => {
+        this.checkIncomingVirtualSheet();
+        if (this.uvCanvas) this.update3DPreviewMesh();
+      });
+    } catch (err) {
+      console.error('3D stage preload warning:', err);
+    }
   }
 
   initUI() {
@@ -97,13 +110,17 @@ class PaperScannerApp {
 
     // Step 1 Buttons
     document.getElementById('btn-start-camera')?.addEventListener('click', () => this.startCamera());
+    document.getElementById('btn-switch-camera')?.addEventListener('click', () => this.switchCamera());
     document.getElementById('btn-stop-camera')?.addEventListener('click', () => this.stopCamera());
     document.getElementById('btn-shutter')?.addEventListener('click', () => this.captureFromVideo());
 
-    document.getElementById('file-upload-input')?.addEventListener('change', (e) => {
+    const handleFilePick = (e) => {
       const file = e.target.files?.[0];
       if (file) this.loadPhotoFile(file);
-    });
+      e.target.value = '';
+    };
+    document.getElementById('camera-capture-input')?.addEventListener('change', handleFilePick);
+    document.getElementById('file-upload-input')?.addEventListener('change', handleFilePick);
 
     document.getElementById('btn-try-sample')?.addEventListener('click', () => {
       const sp = sampleSelect?.value || 'clownfish';
@@ -183,27 +200,200 @@ class PaperScannerApp {
   // LIVE CAMERA & AUTOMATIC FIDUCIAL TRACKING
   // ==========================================================================
 
-  async startCamera() {
-    try {
-      this.stopCamera();
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 960 }
-        },
+  hideCameraError() {
+    document.getElementById('camera-error-box')?.classList.add('hidden');
+  }
+
+  showCameraError(err) {
+    const box = document.getElementById('camera-error-box');
+    const txt = document.getElementById('camera-error-text');
+    if (!box || !txt) return;
+
+    const inIframe = (() => {
+      try { return window.self !== window.top; } catch (_) { return true; }
+    })();
+    const name = err?.name || '';
+    let msg = '';
+
+    if (!window.isSecureContext) {
+      msg = '⚠️ Live Camera සඳහා HTTPS (හෝ localhost) අවශ්‍යයි. පහළ "📱 Phone Camera" හෝ "🖼️ Upload Photo" පාවිච්චි කරන්න.';
+    } else if (inIframe && (name === 'NotAllowedError' || name === 'SecurityError')) {
+      msg = '⚠️ Preview Iframe එක ඇතුළේ Browser එකෙන් Live Camera block කරලා තියෙන්නේ. පහළ "↗ Open Scanner in Full Tab" click කරලා Full Tab එකක open කරන්න (නැත්නම් Upload Photo / Scan Demo පාවිච්චි කරන්න).';
+    } else if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      msg = '⚠️ Camera Permission ලබා දීලා නැහැ. Browser URL bar එක ළඟ 🔒 icon එක click කරලා Camera = Allow දීලා නැවත try කරන්න (නැත්නම් "📱 Phone Camera" ඔබන්න).';
+    } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      msg = '⚠️ මේ device එකේ Webcam/Camera එකක් හමු වුණේ නැහැ. ඔයාට Phone එකෙන් QR scan කරන්න හෝ "🖼️ Upload Photo" / "Scan Demo" පාවිච්චි කරන්න පුළුවන්!';
+    } else if (name === 'NotReadableError' || name === 'TrackStartError') {
+      msg = '⚠️ Camera එක වෙනත් app එකකින් (Zoom/OBS/Teams) පාවිච්චි වෙනවා. ඒක close කරලා නැවත try කරන්න, නැත්නම් "📱 Phone Camera" ඔබන්න.';
+    } else {
+      msg = `⚠️ Live Camera open කරන්න බැරි වුණා (${name || err?.message || 'Unknown error'}). පහළ "📱 Phone Camera" හෝ "🖼️ Upload Photo" පාවිච්චි කරන්න!`;
+    }
+
+    txt.textContent = msg;
+    box.classList.remove('hidden');
+  }
+
+  async acquireCameraStream(preferredDeviceId = null) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      const e = new Error('getUserMedia not supported');
+      e.name = window.isSecureContext ? 'NotSupportedError' : 'SecurityError';
+      throw e;
+    }
+
+    const attempts = [];
+    if (preferredDeviceId) {
+      attempts.push({
+        video: { deviceId: { exact: preferredDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false
       });
-      this.stream = stream;
-      this.video.srcObject = stream;
-      await this.video.play();
+      attempts.push({
+        video: { deviceId: { exact: preferredDeviceId } },
+        audio: false
+      });
+    }
 
+    attempts.push(
+      {
+        video: {
+          facingMode: { ideal: this.facingMode },
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        },
+        audio: false
+      },
+      {
+        video: { facingMode: this.facingMode },
+        audio: false
+      },
+      {
+        video: true,
+        audio: false
+      }
+    );
+
+    let lastErr = null;
+    for (const constraints of attempts) {
+      try {
+        return await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        lastErr = err;
+        // If user explicitly denied permission or iframe blocked it, don't spam prompts
+        if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError' || err?.name === 'SecurityError') {
+          throw err;
+        }
+      }
+    }
+
+    // Final fallback for PCs where default camera is an inactive Virtual Camera (e.g. OBS):
+    // try each enumerated hardware videoinput device one by one!
+    if (navigator.mediaDevices.enumerateDevices) {
+      const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+      for (const dev of devices) {
+        if (!dev.deviceId) continue;
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: { deviceId: { exact: dev.deviceId } },
+            audio: false
+          });
+        } catch (err) {
+          lastErr = err;
+        }
+      }
+    }
+
+    throw lastErr || new Error('Camera unavailable');
+  }
+
+  async attachStreamToVideo(videoEl, stream) {
+    if (!videoEl) return;
+    videoEl.muted = true;
+    videoEl.playsInline = true;
+    videoEl.setAttribute('playsinline', '');
+    videoEl.setAttribute('webkit-playsinline', '');
+    videoEl.srcObject = stream;
+
+    // Wait briefly for metadata + start playback without ever hanging forever
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (!settled) {
+          settled = true;
+          resolve();
+        }
+      };
+      const timer = setTimeout(finish, 2200);
+      const tryPlay = () => {
+        const p = videoEl.play();
+        if (p && typeof p.then === 'function') {
+          p.then(() => { clearTimeout(timer); finish(); }).catch(() => { clearTimeout(timer); finish(); });
+        } else {
+          clearTimeout(timer);
+          finish();
+        }
+      };
+      if (videoEl.readyState >= 1) {
+        tryPlay();
+      } else {
+        videoEl.addEventListener('loadedmetadata', tryPlay, { once: true });
+        tryPlay();
+      }
+    });
+  }
+
+  async startCamera(preferredDeviceId = null) {
+    const startBtn = document.getElementById('btn-start-camera');
+    const origLabel = startBtn?.textContent || '📷 Open Live Camera Scanner';
+    this.hideCameraError();
+
+    if (startBtn) {
+      startBtn.disabled = true;
+      startBtn.textContent = '⏳ Opening Camera...';
+    }
+
+    try {
+      this.stopCamera();
+      const stream = await this.acquireCameraStream(preferredDeviceId);
+      this.stream = stream;
+
+      // IMPORTANT: Unhide #camera-live-box BEFORE calling video.play()!
+      // Calling play() while parent is display:none hangs on iOS Safari & mobile WebKit!
       document.getElementById('camera-live-box')?.classList.remove('hidden');
       document.getElementById('camera-idle-box')?.classList.add('hidden');
 
+      await this.attachStreamToVideo(this.video, stream);
+
+      // Refresh available video input devices for the 🔄 Switch Camera button
+      if (navigator.mediaDevices?.enumerateDevices) {
+        const all = await navigator.mediaDevices.enumerateDevices();
+        this.videoDevices = all.filter((d) => d.kind === 'videoinput' && d.deviceId);
+        const activeTrack = stream.getVideoTracks()[0];
+        const activeId = activeTrack?.getSettings?.()?.deviceId;
+        if (activeId) {
+          this.activeDeviceIndex = this.videoDevices.findIndex((d) => d.deviceId === activeId);
+        }
+      }
+
       this.detectTimer = setInterval(() => this.runLiveMarkerOverlay(), 140);
     } catch (err) {
-      alert('Camera open karanna bari una (HTTPS හෝ Camera permission check karanna). Oyata "Upload Photo" හෝ "Try Sample Paper Photo" පාවිච්චි කරන්නත් පුළුවන්!');
+      console.error('Camera start failed:', err);
+      this.stopCamera();
+      this.showCameraError(err);
+    } finally {
+      if (startBtn) {
+        startBtn.disabled = false;
+        startBtn.textContent = origLabel;
+      }
+    }
+  }
+
+  async switchCamera() {
+    this.facingMode = this.facingMode === 'environment' ? 'user' : 'environment';
+    if (this.videoDevices.length > 1) {
+      this.activeDeviceIndex = (this.activeDeviceIndex + 1) % this.videoDevices.length;
+      const nextDev = this.videoDevices[this.activeDeviceIndex];
+      await this.startCamera(nextDev.deviceId);
+    } else {
+      await this.startCamera(null);
     }
   }
 
@@ -215,6 +405,9 @@ class PaperScannerApp {
     if (this.stream) {
       this.stream.getTracks().forEach((t) => t.stop());
       this.stream = null;
+    }
+    if (this.video) {
+      this.video.srcObject = null;
     }
     document.getElementById('camera-live-box')?.classList.add('hidden');
     document.getElementById('camera-idle-box')?.classList.remove('hidden');
@@ -562,27 +755,26 @@ class PaperScannerApp {
 
     if (enable) {
       try {
-        const arStream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' } },
-          audio: false
-        });
+        const arStream = await this.acquireCameraStream(null);
         this.arStream = arStream;
-        this.arVideo.srcObject = arStream;
-        this.arVideo.classList.remove('hidden');
-        await this.arVideo.play();
-        this.previewRenderer.setClearColor(0x000000, 0); // Transparent WebGL over live rear camera!
-      } catch (_) {
+        this.arVideo?.classList.remove('hidden');
+        await this.attachStreamToVideo(this.arVideo, arStream);
+        this.previewRenderer?.setClearColor(0x000000, 0); // Transparent WebGL over live rear camera!
+      } catch (err) {
+        console.warn('AR camera unavailable:', err);
         this.arMode = false;
         document.getElementById('btn-mode-3d')?.classList.add('active-tab');
         document.getElementById('btn-mode-ar')?.classList.remove('active-tab');
-        alert('AR Camera open karanna camera permission ona. 3D Preview mode eka wada!');
       }
     } else {
       if (this.arStream) {
         this.arStream.getTracks().forEach((t) => t.stop());
         this.arStream = null;
       }
-      this.arVideo?.classList.add('hidden');
+      if (this.arVideo) {
+        this.arVideo.srcObject = null;
+        this.arVideo.classList.add('hidden');
+      }
       this.previewRenderer?.setClearColor(0x062846, 1);
     }
   }
