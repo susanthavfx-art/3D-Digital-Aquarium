@@ -142,6 +142,8 @@ class DigitalAquariumApp {
     this.godRays = [];
     this.gltfLoader = new GLTFLoader();
     this.gltfMixers = [];
+    this.envTemplateCache = new Map();
+    this.plantSwayUniform = { value: 0 };
     this.customEnvGroup = null;
     this.showLabels = true;
     this.showDemoFish = localStorage.getItem('aquarium_show_demo') !== '0';
@@ -200,10 +202,10 @@ class DigitalAquariumApp {
     frontFill.position.set(0, 2, 16);
     this.scene.add(frontFill);
 
-    const reefGlowL = new THREE.PointLight(0xff5ea8, 2.2, 14);
-    reefGlowL.position.set(-8.5, -3.5, -1.5);
-    const reefGlowR = new THREE.PointLight(0x00f5d4, 2.2, 14);
-    reefGlowR.position.set(8.5, -3.5, -1.5);
+    const reefGlowL = new THREE.PointLight(0x52f2d6, 2.0, 18);
+    reefGlowL.position.set(-9.5, -2.5, -1.5);
+    const reefGlowR = new THREE.PointLight(0x64d8ff, 2.0, 18);
+    reefGlowR.position.set(9.5, -2.5, -1.5);
     this.scene.add(reefGlowL, reefGlowR);
 
     window.addEventListener('resize', () => {
@@ -465,6 +467,114 @@ class DigitalAquariumApp {
   // CUSTOM 3D .GLB TANK ENVIRONMENT & PROPS LOADER (BLENDER / MAYA / C4D)
   // ==========================================================================
 
+  getSeabedY(x, z) {
+    const dune =
+      Math.sin(x * 0.28) * 0.38 +
+      Math.cos(z * 0.36) * 0.32 +
+      (z < -4 ? (-z - 4) * 0.18 : 0);
+    return -5.6 + dune;
+  }
+
+  loadNormalizedEnvTemplate(url, propType = 'rock') {
+    const cacheKey = `${url}::${propType}`;
+    if (this.envTemplateCache.has(cacheKey)) {
+      return this.envTemplateCache.get(cacheKey);
+    }
+
+    const promise = new Promise((resolve, reject) => {
+      this.gltfLoader.load(
+        url,
+        (gltf) => {
+          gltf.scene.updateMatrixWorld(true);
+          const worldBox = new THREE.Box3().setFromObject(gltf.scene);
+          const worldSize = new THREE.Vector3();
+          const worldCenter = new THREE.Vector3();
+          worldBox.getSize(worldSize);
+          worldBox.getCenter(worldCenter);
+
+          const nativeHeight = Math.max(worldSize.y, 0.001);
+          const invH = 1.0 / nativeHeight;
+          const templateGroup = new THREE.Group();
+
+          gltf.scene.traverse((child) => {
+            if (!child.isMesh || !child.geometry) return;
+
+            // Bake node rotations/scales into cloned geometry and normalize:
+            // X/Z centered at 0, bottom resting at y=0, total height = 1.0 (+Y Up)
+            const geom = child.geometry.clone();
+            geom.applyMatrix4(child.matrixWorld);
+            geom.translate(-worldCenter.x, -worldBox.min.y, -worldCenter.z);
+            geom.scale(invH, invH, invH);
+            geom.computeVertexNormals();
+            geom.computeBoundingSphere();
+
+            const srcMat = Array.isArray(child.material) ? child.material[0] : child.material;
+            let mat;
+
+            if (propType === 'plant') {
+              // Fix Maya Lambert KHR_materials_transmission=1 & add lush underwater leaf shading + GPU current sway!
+              mat = new THREE.MeshStandardMaterial({
+                map: srcMat?.map || null,
+                color: new THREE.Color(1.12, 1.18, 1.08),
+                emissive: new THREE.Color(0x0c381f),
+                emissiveIntensity: 0.22,
+                roughness: 0.52,
+                metalness: 0.0,
+                side: THREE.DoubleSide
+              });
+              if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
+
+              const swayUniform = this.plantSwayUniform;
+              mat.onBeforeCompile = (shader) => {
+                shader.uniforms.uSwayTime = swayUniform;
+                shader.vertexShader = shader.vertexShader
+                  .replace(
+                    '#include <common>',
+                    `#include <common>
+                    uniform float uSwayTime;`
+                  )
+                  .replace(
+                    '#include <begin_vertex>',
+                    `#include <begin_vertex>
+                    float hNorm = clamp(transformed.y, 0.0, 1.0);
+                    float bend = hNorm * hNorm;
+                    float wPhase = modelMatrix[3].x * 0.42 + modelMatrix[3].z * 0.33;
+                    transformed.x += sin(uSwayTime * 1.35 + wPhase + hNorm * 2.1) * 0.042 * bend;
+                    transformed.z += cos(uSwayTime * 1.08 + wPhase * 1.25 + hNorm * 1.7) * 0.028 * bend;`
+                  );
+              };
+            } else {
+              // Sculpted PBR River Rocks: preserve BaseColor + Normal + Roughness maps & lift underwater contrast
+              mat = new THREE.MeshStandardMaterial({
+                map: srcMat?.map || null,
+                normalMap: srcMat?.normalMap || null,
+                roughnessMap: srcMat?.roughnessMap || null,
+                metalnessMap: srcMat?.metalnessMap || null,
+                color: new THREE.Color(1.36, 1.40, 1.44),
+                emissive: new THREE.Color(0x0d2638),
+                emissiveIntensity: 0.15,
+                roughness: srcMat?.roughness ?? 0.85,
+                metalness: 0.05,
+                side: THREE.DoubleSide
+              });
+              if (mat.map) mat.map.colorSpace = THREE.SRGBColorSpace;
+            }
+
+            const cleanMesh = new THREE.Mesh(geom, mat);
+            templateGroup.add(cleanMesh);
+          });
+
+          resolve({ templateGroup, nativeHeight });
+        },
+        undefined,
+        reject
+      );
+    });
+
+    this.envTemplateCache.set(cacheKey, promise);
+    return promise;
+  }
+
   async loadCustomModelsFromConfig() {
     this.customEnvGroup = new THREE.Group();
     this.scene.add(this.customEnvGroup);
@@ -479,23 +589,25 @@ class DigitalAquariumApp {
       } catch (_) {}
     }
 
-    if (Array.isArray(ENVIRONMENT_CONFIG.props)) {
+    if (Array.isArray(ENVIRONMENT_CONFIG.props) && ENVIRONMENT_CONFIG.props.length > 0) {
       for (const prop of ENVIRONMENT_CONFIG.props) {
         if (!prop?.url) continue;
-        this.gltfLoader.load(
-          prop.url,
-          (gltf) => {
-            const root = gltf.scene;
-            const pos = prop.position || [0, -5.5, -2];
-            root.position.set(pos[0], pos[1], pos[2]);
-            root.scale.setScalar(prop.scale ?? 1.0);
-            root.rotation.y = prop.rotationY ?? 0;
-            this.customEnvGroup.add(root);
-            this.registerGltfAnimations(gltf);
-          },
-          undefined,
-          (err) => console.warn('Failed to load custom prop:', prop.url, err)
-        );
+        const propType = prop.type || (prop.url.toLowerCase().includes('plant') ? 'plant' : 'rock');
+        this.loadNormalizedEnvTemplate(prop.url, propType)
+          .then(({ templateGroup, nativeHeight }) => {
+            const instance = templateGroup.clone(true);
+            const x = prop.x ?? prop.position?.[0] ?? 0;
+            const z = prop.z ?? prop.position?.[2] ?? -2;
+            const sink = prop.sink ?? 0.14;
+            const y = prop.y ?? prop.position?.[1] ?? (this.getSeabedY(x, z) - sink);
+
+            const targetH = prop.targetHeight ?? (nativeHeight * (prop.scale ?? 1.0));
+            instance.position.set(x, y, z);
+            instance.scale.setScalar(targetH);
+            instance.rotation.y = prop.rotationY ?? 0;
+            this.customEnvGroup.add(instance);
+          })
+          .catch((err) => console.warn('Failed to load custom prop:', prop.url, err));
       }
     }
   }
@@ -739,8 +851,13 @@ class DigitalAquariumApp {
     if (species === 'turtle') y = 0.8 + Math.random() * 3.8;
     else if (species === 'jellyfish') y = -1.5 + Math.random() * 5.8;
     else if (species === 'starfish') {
-      // Starfish glide along the front lower glass or sandy coral floor!
-      return new THREE.Vector3(x * 0.85, -4.3 + Math.random() * 2.4, 1.5 + Math.random() * 2.6);
+      // Starfish glide along the front sandy foreground or front glass!
+      return new THREE.Vector3(x * 0.72, -4.3 + Math.random() * 2.2, 2.1 + Math.random() * 2.1);
+    }
+
+    // Keep swim targets cleanly above the left/right rock outcrops
+    if (Math.abs(x) > 5.6 && z < 0.8) {
+      y = Math.max(y, 0.2 + Math.random() * 3.8);
     }
     return new THREE.Vector3(x, y, z);
   }
@@ -1171,6 +1288,7 @@ class DigitalAquariumApp {
     const elapsed = this.clock.elapsedTime;
 
     this.controls.update();
+    this.plantSwayUniform.value = elapsed;
     for (const mixer of this.gltfMixers) {
       mixer.update(dt);
     }
@@ -1324,6 +1442,11 @@ class DigitalAquariumApp {
     if (desired.lengthSq() > 0.001) desired.normalize();
     const activeSpeed = actor.speed * (chasingFood ? 1.65 : 1.0);
     desired.multiplyScalar(activeSpeed).add(fleeImpulse);
+
+    // Smoothly arc over the left/right rock outcrops instead of clipping boulders
+    if (sp !== 'starfish' && Math.abs(actor.pos.x) > 5.4 && actor.pos.z < 0.8 && actor.pos.y < 0.0) {
+      desired.y += (0.2 - actor.pos.y) * 1.6;
+    }
 
     actor.vel.lerp(desired, dt * (sp === 'starfish' ? 1.2 : 1.8));
 
