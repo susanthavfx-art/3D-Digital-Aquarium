@@ -1210,7 +1210,7 @@ class DigitalAquariumApp {
       return new THREE.Vector3(x * 0.72, -4.3 + Math.random() * 2.2, 2.1 + Math.random() * 2.1);
     } else if (species === 'crab') {
       // Crabs scuttle sideways along the sandy seabed just behind the front glass
-      return new THREE.Vector3(x * 0.8, -4.25 + Math.random() * 1.15, 0.6 + Math.random() * 2.8);
+      return new THREE.Vector3(x * 0.8, -4.45 + Math.random() * 0.55, 0.6 + Math.random() * 2.6);
     }
 
     // Keep swim targets cleanly above the left/right rock outcrops
@@ -1873,7 +1873,7 @@ class DigitalAquariumApp {
       // Crab: sideways scuttle across the sand, always showing its face to the glass
       actor.pos.addScaledVector(actor.vel, dt * 0.55);
       actor.pos.x = Math.max(-TANK_BOUNDS.x + 0.8, Math.min(TANK_BOUNDS.x - 0.8, actor.pos.x));
-      actor.pos.y = Math.max(-4.5, Math.min(-2.9, actor.pos.y));
+      actor.pos.y = Math.max(-4.55, Math.min(-3.85, actor.pos.y)); // hug the sand (seabed ~ -5.6 + dunes)
       actor.pos.z = Math.max(-0.6, Math.min(3.2, actor.pos.z));
       actor.root.position.copy(actor.pos);
 
