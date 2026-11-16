@@ -128,7 +128,8 @@ const STARTER_FISH_SPECS = [
   { id: 'demo-2', name: 'Kavindu', species: 'angelfish', palette: ['#00bbf9', '#fee440', '#ff9f1c', '#ffffff'], isDemo: true },
   { id: 'demo-3', name: 'Nethmi', species: 'bluetang', palette: ['#0077b6', '#00b4d8', '#48cae4', '#ffffff'], isDemo: true },
   { id: 'demo-4', name: 'Amaya', species: 'seahorse', palette: ['#ff9f1c', '#ffd166', '#2ec4b6', '#ff5d8f'], isDemo: true },
-  { id: 'demo-5', name: 'Sahan', species: 'starfish', palette: ['#ff6b35', '#ffbe0b', '#fb5607', '#ffffff'], isDemo: true }
+  { id: 'demo-5', name: 'Sahan', species: 'starfish', palette: ['#ff6b35', '#ffbe0b', '#fb5607', '#ffffff'], isDemo: true },
+  { id: 'demo-6', name: 'Kani', species: 'crab', palette: ['#ff6b35', '#ffbe0b', '#fb5607', '#ffffff'], isDemo: true }
 ];
 
 class DigitalAquariumApp {
@@ -1148,7 +1149,7 @@ class DigitalAquariumApp {
 
     // Create floating Artist Name Badge Sprite
     const labelSprite = this.createNameBadgeSprite(`${meta.emoji} ${name}`, isDemo);
-    labelSprite.position.set(0, species === 'seahorse' ? 1.52 : species === 'jellyfish' ? 1.32 : 1.08, 0);
+    labelSprite.position.set(0, species === 'seahorse' ? 1.52 : species === 'jellyfish' ? 1.32 : species === 'crab' ? 0.95 : 1.08, 0);
     labelSprite.visible = this.showLabels;
 
     const root = new THREE.Group();
@@ -1169,7 +1170,11 @@ class DigitalAquariumApp {
       pos: new THREE.Vector3(),
       vel: new THREE.Vector3(),
       target: new THREE.Vector3(),
-      speed: species === 'jellyfish' ? 1.05 : species === 'starfish' ? 0.55 : 2.15 + Math.random() * 0.75,
+      speed:
+        species === 'jellyfish' ? 1.05
+        : species === 'starfish' ? 0.55
+        : species === 'crab' ? 1.25
+        : 2.15 + Math.random() * 0.75,
       phase: Math.random() * 100,
       heroTimer: celebrate ? 4.8 : 0,
       retargetTimer: 0
@@ -1203,6 +1208,9 @@ class DigitalAquariumApp {
     else if (species === 'starfish') {
       // Starfish glide along the front sandy foreground or front glass!
       return new THREE.Vector3(x * 0.72, -4.3 + Math.random() * 2.2, 2.1 + Math.random() * 2.1);
+    } else if (species === 'crab') {
+      // Crabs scuttle sideways along the sandy seabed just behind the front glass
+      return new THREE.Vector3(x * 0.8, -4.45 + Math.random() * 0.55, 0.6 + Math.random() * 2.6);
     }
 
     // Keep swim targets cleanly above the left/right rock outcrops
@@ -1821,11 +1829,11 @@ class DigitalAquariumApp {
     desired.multiplyScalar(activeSpeed).add(fleeImpulse);
 
     // Smoothly arc over the left/right rock outcrops instead of clipping boulders
-    if (sp !== 'starfish' && Math.abs(actor.pos.x) > 5.4 && actor.pos.z < 0.8 && actor.pos.y < 0.0) {
+    if (sp !== 'starfish' && sp !== 'crab' && Math.abs(actor.pos.x) > 5.4 && actor.pos.z < 0.8 && actor.pos.y < 0.0) {
       desired.y += (0.2 - actor.pos.y) * 1.6;
     }
 
-    actor.vel.lerp(desired, dt * (sp === 'starfish' ? 1.2 : 1.8));
+    actor.vel.lerp(desired, dt * (sp === 'starfish' ? 1.2 : sp === 'crab' ? 1.6 : 1.8));
 
     // Species-specific motion & orientation
     if (sp === 'jellyfish') {
@@ -1861,6 +1869,21 @@ class DigitalAquariumApp {
       actor.meshGroup.rotation.y = yaw;
       actor.meshGroup.rotation.z = -0.10 + Math.sin((elapsed + actor.phase) * 2.2) * 0.08;
       actor.meshGroup.rotation.x = 0;
+    } else if (sp === 'crab') {
+      // Crab: sideways scuttle across the sand, always showing its face to the glass
+      actor.pos.addScaledVector(actor.vel, dt * 0.55);
+      actor.pos.x = Math.max(-TANK_BOUNDS.x + 0.8, Math.min(TANK_BOUNDS.x - 0.8, actor.pos.x));
+      actor.pos.y = Math.max(-4.55, Math.min(-3.85, actor.pos.y)); // hug the sand (seabed ~ -5.6 + dunes)
+      actor.pos.z = Math.max(-0.6, Math.min(3.2, actor.pos.z));
+      actor.root.position.copy(actor.pos);
+
+      // Face the camera (+Z) with a slow curious sway; body leans into the sidestep
+      const swayY = Math.sin((elapsed + actor.phase) * 0.45) * 0.20;
+      const lean = Math.max(-0.14, Math.min(0.14, -actor.vel.x * 0.07));
+      actor.meshGroup.rotation.order = 'YXZ';
+      actor.meshGroup.rotation.y = swayY;
+      actor.meshGroup.rotation.z = lean + Math.sin((elapsed + actor.phase) * 0.8) * 0.02;
+      actor.meshGroup.rotation.x = 0;
     } else {
       // Fish & Sea Turtles orient smoothly along their 3D velocity vector (+X is nose forward!)
       actor.pos.addScaledVector(actor.vel, dt);
@@ -1878,7 +1901,11 @@ class DigitalAquariumApp {
       actor.meshGroup.rotation.x = 0;
     }
 
-    animateCreatureMesh(actor.meshGroup, elapsed + actor.phase, chasingFood ? 1.5 : 1.0);
+    // Animation clip tempo follows the live swim speed: slow flutter when hovering,
+    // faster beats while sprinting for food or darting away from a tap.
+    const liveSpeed = actor.vel.length();
+    const speedRatio = Math.max(0.45, Math.min(1.65, liveSpeed / Math.max(actor.speed, 0.001)));
+    animateCreatureMesh(actor.meshGroup, elapsed + actor.phase, speedRatio * (chasingFood ? 1.25 : 1.0));
   }
 }
 
