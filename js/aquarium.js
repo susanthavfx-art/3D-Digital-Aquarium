@@ -165,25 +165,15 @@ class DigitalAquariumApp {
   initScene() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x041e3a);
-    this.scene.fog = new THREE.FogExp2(0x062c52, 0.026);
+    // Fog is tinted to the painted backdrop's mid-ocean blue so distant 3D
+    // rocks/plants melt into the background photo instead of going navy-dark.
+    this.scene.fog = new THREE.FogExp2(0x0a5b8c, 0.026);
 
-    // Underwater Fish Tank Background Image (PNG primary since it's guaranteed on the live repo;
-    // JPEG fallback if the full-quality PNG is ever unavailable)
+    // NOTE: the real photographic backdrop (./assets/underwater-bg.jpg) is loaded
+    // in loadUnderwaterBackdrop() at the end of initScene(), once this.renderer exists.
     this.bgTextureLoader = new THREE.TextureLoader();
-    this.bgTextureLoader.load(
-      './assets/underwater-bg.png',
-      (tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace;
-        this.scene.background = tex;
-      },
-      undefined,
-      () => {
-        this.bgTextureLoader.load('./assets/underwater-bg.jpg', (tex) => {
-          tex.colorSpace = THREE.SRGBColorSpace;
-          this.scene.background = tex;
-        });
-      }
-    );
+    this.backdropTexture = null;
+    this.backdropDome = null;
 
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -230,6 +220,7 @@ class DigitalAquariumApp {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
+      this.fitBackdropToViewport();
     });
 
     // Click tank to inspect creature OR drop fish food pellets!
@@ -242,6 +233,74 @@ class DigitalAquariumApp {
       if (Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y) > 8) return;
       this.handleTankTap(e);
     });
+
+    // Photographic underwater background (assets/underwater-bg.jpg)
+    this.loadUnderwaterBackdrop();
+  }
+
+  // ==========================================================================
+  // UNDERWATER PHOTO BACKGROUND  •  ./assets/underwater-bg.jpg
+  // ==========================================================================
+  // The image is used as the actual WebGL scene background, so it sits behind
+  // every fish, rock & plant. It is scaled like CSS `object-fit: cover`, which
+  // keeps the artwork un-stretched on wide TVs, laptops AND portrait phones.
+  loadUnderwaterBackdrop() {
+    const applyTexture = (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace;
+      // Fullscreen background quad: no mipmaps needed, keep it razor sharp.
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.matrixAutoUpdate = true;
+
+      this.backdropTexture = tex;
+      this.scene.background = tex;
+      this.scene.backgroundIntensity = 1;
+      this.scene.backgroundBlurriness = 0;
+      this.fitBackdropToViewport();
+
+      // Cross-fade the loading gradient away so the photo dissolves in smoothly.
+      if (this.backdropDome) this.backdropFade = 1;
+      else this.backdropFade = 0;
+    };
+
+    // JPG first (lighter download), PNG as a fallback if the JPG is missing.
+    const loadNext = (urls) => {
+      const url = urls.shift();
+      if (!url) return;
+      this.bgTextureLoader.load(url, applyTexture, undefined, () => loadNext(urls));
+    };
+    loadNext(['./assets/underwater-bg.jpg', './assets/underwater-bg.png']);
+  }
+
+  // CSS `background-size: cover` math for a three.js fullscreen background texture.
+  fitBackdropToViewport() {
+    const tex = this.backdropTexture;
+    if (!tex || !tex.image || !this.renderer) return;
+
+    const imgW = tex.image.width || 16;
+    const imgH = tex.image.height || 9;
+    const canvas = this.renderer.domElement;
+    const viewW = canvas.clientWidth || window.innerWidth || imgW;
+    const viewH = canvas.clientHeight || window.innerHeight || imgH;
+
+    const imgAspect = imgW / imgH;
+    const viewAspect = viewW / viewH;
+
+    let uSpan = 1;
+    let vSpan = 1;
+    if (viewAspect > imgAspect) {
+      // Viewport is wider than the artwork -> fill width, crop top & bottom.
+      vSpan = imgAspect / viewAspect;
+    } else {
+      // Viewport is taller (phones) -> fill height, crop left & right.
+      uSpan = viewAspect / imgAspect;
+    }
+
+    tex.repeat.set(uSpan, vSpan);
+    tex.offset.set((1 - uSpan) / 2, (1 - vSpan) / 2);
   }
 
   buildEnvironment() {
@@ -262,8 +321,20 @@ class DigitalAquariumApp {
 
     const backdrop = new THREE.Mesh(
       new THREE.SphereGeometry(52, 32, 24),
-      new THREE.MeshBasicMaterial({ map: bgTex, side: THREE.BackSide, fog: false })
+      new THREE.MeshBasicMaterial({
+        map: bgTex,
+        side: THREE.BackSide,
+        fog: false,
+        transparent: true,
+        depthWrite: false
+      })
     );
+    // Fallback only: as soon as assets/underwater-bg.jpg is ready, the photo
+    // becomes the scene background and this gradient dome fades away.
+    backdrop.name = 'underwater-gradient-fallback';
+    this.backdropDome = backdrop;
+    this.backdropFade = null;
+    backdrop.visible = !this.backdropTexture;
     this.scene.add(backdrop);
 
     // 2. Shimmering Water Surface above
@@ -1321,6 +1392,17 @@ class DigitalAquariumApp {
     const elapsed = this.clock.elapsedTime;
 
     this.controls.update();
+
+    // Smooth dissolve from the gradient loading dome to the underwater photo
+    if (this.backdropFade !== null && this.backdropDome) {
+      this.backdropFade = Math.max(0, this.backdropFade - dt * 1.6);
+      this.backdropDome.material.opacity = this.backdropFade;
+      if (this.backdropFade === 0) {
+        this.backdropDome.visible = false;
+        this.backdropFade = null;
+      }
+    }
+
     this.plantSwayUniform.value = elapsed;
     for (const mixer of this.gltfMixers) {
       mixer.update(dt);
