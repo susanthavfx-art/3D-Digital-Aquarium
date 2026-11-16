@@ -40,6 +40,9 @@ body.aquarium-body {
   position: fixed;
   inset: 0;
   z-index: 1;
+  /* Instant paint + graceful fallback if WebGL is unavailable.
+     The opaque WebGL canvas covers this the moment the tank starts. */
+  background: #031528 url('../assets/underwater-bg.jpg') center center / cover no-repeat;
 }
 
 .top-hud {

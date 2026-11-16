@@ -30,3 +30,15 @@ Pre-connected in `js/config.js` to your Supabase project **`digital-aquarium`** 
 - **Table:** `public.aquarium_fishes` (with Row Level Security & `supabase_realtime` enabled)
 - **Storage Bucket:** `fish-textures` (public read/upload for scanned UV textures)
 - Full SQL reference is saved in `supabase-schema.sql`.
+
+---
+
+## 🖼️ Underwater Background Artwork
+
+The tank uses **`assets/underwater-bg.jpg`** as the full-bleed backdrop behind every 3D fish, rock and plant
+(`js/aquarium.js` → `loadUnderwaterBackdrop()`):
+
+- The JPG is preloaded in `index.html` and applied as the Three.js `scene.background`, scaled like CSS
+  `background-size: cover` — so it is never stretched on TVs, laptops or portrait phones.
+- A gradient dome is shown while the artwork downloads (and if the file is ever missing), then cross-fades away.
+- `assets/underwater-bg.png` is used automatically as a fallback if the JPG cannot be loaded.
