@@ -33,12 +33,20 @@ Pre-connected in `js/config.js` to your Supabase project **`digital-aquarium`** 
 
 ---
 
-## 🖼️ Underwater Background Artwork
+## 🖼️ Parallax Underwater Backdrop
 
-The tank uses **`assets/underwater-bg.jpg`** as the full-bleed backdrop behind every 3D fish, rock and plant
-(`js/aquarium.js` → `loadUnderwaterBackdrop()`):
+The tank is drawn on top of a **4-layer parallax backdrop** (`js/aquarium.js` → `buildParallaxBackdrop()`),
+so it feels like a real underwater environment instead of a flat blue wall:
 
-- The JPG is preloaded in `index.html` and applied as the Three.js `scene.background`, scaled like CSS
-  `background-size: cover` — so it is never stretched on TVs, laptops or portrait phones.
-- A gradient dome is shown while the artwork downloads (and if the file is ever missing), then cross-fades away.
-- `assets/underwater-bg.png` is used automatically as a fallback if the JPG cannot be loaded.
+| Layer | Source | Depth | Behaviour |
+|---|---|---|---|
+| **Gradient** | painted canvas gradient | far | instant paint + graceful fallback if the photo is missing |
+| **Photo** | **`assets/underwater-bg.jpg`** (`.png` fallback) | far | fills the frame like CSS `cover`, fades in when decoded |
+| **Midground** | painted rock / kelp / coral silhouettes | mid | slides ~4× more than the photo while orbiting |
+| **Foreground** | dark out-of-focus kelp at the edges | near | strongest parallax, frames the tank |
+
+- The backdrop lives in its own `Scene` that is rendered **before** the tank, then the 3D scene is
+  rendered on top without clearing — so the artwork can never cover the fish (or be covered by them).
+- Layers are children of the camera, so they always fill the frame, and each one slides by
+  `distance / virtualDepth` of the camera movement → true parallax with no visible edges.
+- Swap the artwork any time by replacing `assets/underwater-bg.jpg` (16:9 works best).
