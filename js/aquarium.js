@@ -589,6 +589,227 @@ class DigitalAquariumApp {
     return this.blurCanvasTexture(canvas, 9);
   }
 
+  buildEnvironment() {
+    // 1. The deep-water backdrop now lives in its own parallax scene
+    //    (see buildParallaxBackdrop) which is rendered behind the tank.
+
+
+    // 2. Shimmering Water Surface above
+    const surfGeom = new THREE.PlaneGeometry(60, 38, 36, 24);
+    surfGeom.rotateX(Math.PI / 2);
+    const surfMat = new THREE.MeshStandardMaterial({
+      color: 0x5ce1e6,
+      emissive: 0x168aad,
+      emissiveIntensity: 0.45,
+      transparent: true,
+      opacity: 0.36,
+      roughness: 0.15,
+      side: THREE.DoubleSide
+    });
+    this.waterSurface = new THREE.Mesh(surfGeom, surfMat);
+    this.waterSurface.position.y = 7.2;
+    this.scene.add(this.waterSurface);
+
+    // 3. Animated Caustics Sandy Seabed
+    this.causticsCanvas = document.createElement('canvas');
+    this.causticsCanvas.width = 256;
+    this.causticsCanvas.height = 256;
+    this.causticsTexture = new THREE.CanvasTexture(this.causticsCanvas);
+    this.causticsTexture.wrapS = THREE.RepeatWrapping;
+    this.causticsTexture.wrapT = THREE.RepeatWrapping;
+    this.causticsTexture.repeat.set(5, 3);
+    this.updateCausticsCanvas(0);
+
+    const floorGeom = new THREE.PlaneGeometry(54, 34, 64, 40);
+    floorGeom.rotateX(-Math.PI / 2);
+    const fPos = floorGeom.attributes.position;
+    for (let i = 0; i < fPos.count; i++) {
+      const x = fPos.getX(i);
+      const z = fPos.getZ(i);
+      const dune = Math.sin(x * 0.28) * 0.38 + Math.cos(z * 0.36) * 0.32 + (z < -4 ? (-z - 4) * 0.18 : 0);
+      fPos.setY(i, dune);
+    }
+    floorGeom.computeVertexNormals();
+
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0xd9be93,
+      emissive: 0x38bdf8,
+      emissiveMap: this.causticsTexture,
+      emissiveIntensity: 0.32,
+      roughness: 0.88
+    });
+    const seabed = new THREE.Mesh(floorGeom, floorMat);
+    seabed.position.y = -5.6;
+    seabed.visible = ENVIRONMENT_CONFIG.showBuiltInSandFloor !== false;
+    this.defaultSandFloor = seabed;
+    this.scene.add(seabed);
+
+    // 4. Volumetric Sunlight God Rays
+    const rayCanvas = document.createElement('canvas');
+    rayCanvas.width = 64;
+    rayCanvas.height = 256;
+    const rctx = rayCanvas.getContext('2d');
+    const rg = rctx.createLinearGradient(0, 0, 0, 256);
+    rg.addColorStop(0, 'rgba(180, 248, 255, 0.28)');
+    rg.addColorStop(0.55, 'rgba(110, 225, 250, 0.09)');
+    rg.addColorStop(1, 'rgba(56, 189, 248, 0)');
+    rctx.fillStyle = rg;
+    rctx.fillRect(0, 0, 64, 256);
+    const rayTex = new THREE.CanvasTexture(rayCanvas);
+
+    for (let i = 0; i < 7; i++) {
+      const topR = 0.7 + Math.random() * 0.7;
+      const botR = 2.2 + Math.random() * 1.4;
+      const rayGeom = new THREE.CylinderGeometry(topR, botR, 15, 16, 1, true);
+      const rayMat = new THREE.MeshBasicMaterial({
+        map: rayTex,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+      const ray = new THREE.Mesh(rayGeom, rayMat);
+      ray.position.set(-12 + i * 4.2, 0.8, -3.5 - (i % 3) * 1.8);
+      ray.rotation.z = -0.22 + (i % 2) * 0.08;
+      this.scene.add(ray);
+      this.godRays.push({ mesh: ray, baseX: ray.position.x, phase: i * 1.1 });
+    }
+
+    // 5. Lush 3D Coral Reef Clusters, Rocks & Swaying Kelp Forest
+    this.buildCoralReefs();
+
+    // 6. Rising Ambient 3D Bubbles + Floating Plankton
+    this.buildAmbientBubbles();
+  }
+
+  updateCausticsCanvas(time) {
+    const ctx = this.causticsCanvas.getContext('2d');
+    ctx.fillStyle = '#031526';
+    ctx.fillRect(0, 0, 256, 256);
+    ctx.globalCompositeOperation = 'lighter';
+    ctx.strokeStyle = 'rgba(110, 235, 255, 0.28)';
+    ctx.lineWidth = 3;
+
+    for (let i = 0; i < 14; i++) {
+      ctx.beginPath();
+      const yBase = (i / 14) * 256;
+      for (let x = 0; x <= 256; x += 16) {
+        const y =
+          (yBase +
+            Math.sin(x * 0.05 + time * 1.8 + i) * 18 +
+            Math.cos(x * 0.03 - time * 1.3 + i * 2) * 14 +
+            256) %
+          256;
+        if (x === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    this.causticsTexture.needsUpdate = true;
+  }
+
+  buildCoralReefs() {
+    this.defaultReefGroup = new THREE.Group();
+    this.defaultReefGroup.visible = ENVIRONMENT_CONFIG.showBuiltInRocksAndCorals !== false;
+    this.scene.add(this.defaultReefGroup);
+
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x334e68, roughness: 0.92, flatShading: true });
+    const coralPalette = [0xff5d8f, 0xff85a1, 0xff9e00, 0x00f5d4, 0x9b5de5, 0xf15bb5, 0xfee440];
+
+    const reefSpots = [
+      [-10.5, -5.2, -2.5, 1.3],
+      [-6.2, -5.3, -4.2, 1.0],
+      [0.4, -5.5, -5.2, 1.4],
+      [6.8, -5.3, -3.5, 1.15],
+      [10.8, -5.1, -2.0, 1.25],
+      [-12.2, -5.2, 1.2, 0.85],
+      [12.2, -5.2, 1.0, 0.9]
+    ];
+
+    reefSpots.forEach(([rx, ry, rz, s], idx) => {
+      const cluster = new THREE.Group();
+      cluster.position.set(rx, ry, rz);
+
+      // Base rocks
+      for (let r = 0; r < 3; r++) {
+        const rock = new THREE.Mesh(new THREE.DodecahedronGeometry((1.2 + r * 0.35) * s, 1), rockMat);
+        rock.position.set((r - 1) * 0.9 * s, 0.2, (r % 2) * 0.6);
+        rock.scale.set(1.3, 0.68, 1.1);
+        rock.rotation.set(r, r * 1.2, 0);
+        cluster.add(rock);
+      }
+
+      // Brain coral / glowing anemone dome
+      const cColor1 = coralPalette[idx % coralPalette.length];
+      const dome = new THREE.Mesh(
+        new THREE.SphereGeometry(0.75 * s, 18, 14),
+        new THREE.MeshStandardMaterial({
+          color: cColor1,
+          emissive: cColor1,
+          emissiveIntensity: 0.18,
+          roughness: 0.55
+        })
+      );
+      dome.position.set(-0.3 * s, 0.65 * s, 0.3);
+      dome.scale.set(1.1, 0.82, 1.1);
+      cluster.add(dome);
+
+      // Branching Staghorn Coral tubes
+      const cColor2 = coralPalette[(idx + 2) % coralPalette.length];
+      const branchMat = new THREE.MeshStandardMaterial({
+        color: cColor2,
+        emissive: cColor2,
+        emissiveIntensity: 0.16,
+        roughness: 0.45
+      });
+      for (let b = 0; b < 5; b++) {
+        const h = (1.1 + (b % 3) * 0.45) * s;
+        const cyl = new THREE.Mesh(new THREE.CapsuleGeometry(0.11 * s, h, 4, 8), branchMat);
+        const ang = (b / 5) * Math.PI * 2;
+        cyl.position.set(0.45 * s + Math.cos(ang) * 0.35, h * 0.5 + 0.3, Math.sin(ang) * 0.35);
+        cyl.rotation.z = Math.cos(ang) * 0.38;
+        cyl.rotation.x = Math.sin(ang) * 0.38;
+        cluster.add(cyl);
+      }
+
+      this.defaultReefGroup.add(cluster);
+    });
+
+    // Swaying Kelp Seaweed Forest
+    this.defaultKelpGroup = new THREE.Group();
+    this.defaultKelpGroup.visible = ENVIRONMENT_CONFIG.showBuiltInKelpPlants !== false;
+    this.scene.add(this.defaultKelpGroup);
+
+    const kelpMat = new THREE.MeshStandardMaterial({
+      color: 0x2ec4b6,
+      emissive: 0x0b525b,
+      emissiveIntensity: 0.25,
+      roughness: 0.5,
+      side: THREE.DoubleSide
+    });
+
+    const kelpLocations = [
+      [-13.2, -2.5], [-12.6, -3.2], [-8.8, -5.2], [-3.5, -5.8],
+      [3.8, -5.6], [9.2, -4.8], [13.0, -2.8], [12.4, -3.6]
+    ];
+
+    kelpLocations.forEach(([kx, kz], idx) => {
+      for (let strand = 0; strand < 3; strand++) {
+        const height = 3.2 + Math.random() * 2.6;
+        const geom = new THREE.PlaneGeometry(0.32, height, 2, 14);
+        geom.translate(0, height / 2, 0);
+        const base = geom.attributes.position.array.slice();
+        const mesh = new THREE.Mesh(geom, kelpMat);
+        mesh.position.set(kx + (strand - 1) * 0.4, -5.6, kz + (strand % 2) * 0.35);
+        mesh.rotation.y = strand * 0.8;
+        this.defaultKelpGroup.add(mesh);
+        this.kelpBlades.push({ mesh, base, height, phase: idx + strand * 1.3 });
+      }
+    });
+  }
+
+
   // ==========================================================================
   // CUSTOM 3D .GLB TANK ENVIRONMENT & PROPS LOADER (BLENDER / MAYA / C4D)
   // ==========================================================================
