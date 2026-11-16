@@ -164,16 +164,22 @@ class DigitalAquariumApp {
 
   initScene() {
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x041e3a);
+    // The tank is drawn as a SECOND pass on top of the parallax backdrop scene,
+    // so this scene must never clear / paint its own background.
+    this.scene.background = null;
     // Fog is tinted to the painted backdrop's mid-ocean blue so distant 3D
-    // rocks/plants melt into the background photo instead of going navy-dark.
+    // rocks/plants melt into the background instead of going navy-dark.
     this.scene.fog = new THREE.FogExp2(0x0a5b8c, 0.026);
 
-    // NOTE: the real photographic backdrop (./assets/underwater-bg.jpg) is loaded
-    // in loadUnderwaterBackdrop() at the end of initScene(), once this.renderer exists.
     this.bgTextureLoader = new THREE.TextureLoader();
-    this.backdropTexture = null;
-    this.backdropDome = null;
+    this.backdropScene = null;
+    this.backdropRig = null;
+    this.backdropLayers = [];
+    this.backdropPhotoLayer = null;
+    this.backdropHomePos = null;
+    this._bdDelta = new THREE.Vector3();
+    this._bdRight = new THREE.Vector3();
+    this._bdUp = new THREE.Vector3();
 
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -220,7 +226,7 @@ class DigitalAquariumApp {
       this.camera.aspect = window.innerWidth / window.innerHeight;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(window.innerWidth, window.innerHeight);
-      this.fitBackdropToViewport();
+      this.layoutBackdropLayers();
     });
 
     // Click tank to inspect creature OR drop fish food pellets!
@@ -234,322 +240,353 @@ class DigitalAquariumApp {
       this.handleTankTap(e);
     });
 
-    // Photographic underwater background (assets/underwater-bg.jpg)
-    this.loadUnderwaterBackdrop();
+    // Parallax underwater backdrop (photo + painted silhouettes)
+    this.buildParallaxBackdrop();
   }
 
   // ==========================================================================
-  // UNDERWATER PHOTO BACKGROUND  •  ./assets/underwater-bg.jpg
+  // PARALLAX UNDERWATER BACKDROP  •  assets/underwater-bg.jpg + painted layers
   // ==========================================================================
-  // The image is used as the actual WebGL scene background, so it sits behind
-  // every fish, rock & plant. It is scaled like CSS `object-fit: cover`, which
-  // keeps the artwork un-stretched on wide TVs, laptops AND portrait phones.
-  loadUnderwaterBackdrop() {
-    const applyTexture = (tex) => {
-      tex.colorSpace = THREE.SRGBColorSpace;
-      // Fullscreen background quad: no mipmaps needed, keep it razor sharp.
-      tex.generateMipmaps = false;
-      tex.minFilter = THREE.LinearFilter;
-      tex.magFilter = THREE.LinearFilter;
-      tex.wrapS = THREE.ClampToEdgeWrapping;
-      tex.wrapT = THREE.ClampToEdgeWrapping;
-      tex.matrixAutoUpdate = true;
+  // Four camera-locked layers are rendered BEFORE the tank (a second render
+  // pass), so they always sit behind every fish, rock and plant:
+  //
+  //   gradient   (far)   painted water gradient  -> instant paint + fallback
+  //   photo      (far)   assets/underwater-bg.jpg -> the artwork itself
+  //   midground  (mid)   painted distant rock & kelp silhouettes
+  //   foreground (near)  dark, soft kelp framing the left/right edges
+  //
+  // Every layer slides by a different amount while the visitor orbits the
+  // tank, which creates real depth (parallax) instead of a flat poster.
+  buildParallaxBackdrop() {
+    this.backdropScene = new THREE.Scene();
+    this.backdropScene.background = new THREE.Color(0x062c52);
 
-      this.backdropTexture = tex;
-      this.scene.background = tex;
-      this.scene.backgroundIntensity = 1;
-      this.scene.backgroundBlurriness = 0;
-      this.fitBackdropToViewport();
+    // Layers are children of the camera, so they always fill the frame.
+    this.backdropRig = new THREE.Group();
+    this.backdropRig.name = 'parallax-backdrop-rig';
+    this.camera.add(this.backdropRig);
+    this.backdropScene.add(this.camera);
+    this.backdropHomePos = this.camera.position.clone();
 
-      // Cross-fade the loading gradient away so the photo dissolves in smoothly.
-      if (this.backdropDome) this.backdropFade = 1;
-      else this.backdropFade = 0;
-    };
+    // 1. Painted deep-water gradient (instant paint + graceful fallback)
+    this.addBackdropLayer({
+      name: 'backdrop-gradient',
+      dist: 90,
+      virtualDepth: 900,
+      map: this.createBackdropGradientTexture(),
+      stretch: true,
+      margin: 1.04,
+      renderOrder: 0
+    });
 
-    // JPG first (lighter download), PNG as a fallback if the JPG is missing.
-    const loadNext = (urls) => {
+    // 2. The underwater artwork itself (fades in once decoded)
+    this.backdropPhotoLayer = this.addBackdropLayer({
+      name: 'backdrop-photo',
+      dist: 60,
+      virtualDepth: 260,
+      opacity: 0,
+      margin: 1.12,
+      renderOrder: 1
+    });
+
+    // 3. Painted mid-ground silhouettes (distant rocks, kelp, coral)
+    this.addBackdropLayer({
+      name: 'backdrop-midground',
+      dist: 34,
+      virtualDepth: 62,
+      map: this.createMidgroundSilhouetteTexture(),
+      stretch: true,
+      margin: 1.22,
+      renderOrder: 2
+    });
+
+    // 4. Near foreground kelp framing the edges — strongest parallax
+    this.addBackdropLayer({
+      name: 'backdrop-foreground',
+      dist: 16,
+      virtualDepth: 40,
+      map: this.createForegroundKelpTexture(),
+      opacity: 0.8,
+      stretch: true,
+      margin: 1.0,
+      renderOrder: 3
+    });
+
+    this.layoutBackdropLayers();
+    this.loadBackdropPhoto();
+  }
+
+  addBackdropLayer({ name, dist, virtualDepth, map = null, opacity = 1, stretch = false, margin = 1.3, renderOrder = 0 }) {
+    const material = new THREE.MeshBasicMaterial({
+      map,
+      color: 0xffffff,
+      transparent: true,
+      opacity,
+      depthTest: false,
+      depthWrite: false,
+      fog: false,
+      toneMapped: false,
+      side: THREE.DoubleSide
+    });
+
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), material);
+    mesh.name = name;
+    mesh.position.set(0, 0, -dist);
+    mesh.renderOrder = renderOrder;
+    mesh.frustumCulled = false;
+    this.backdropRig.add(mesh);
+
+    const layer = { name, mesh, dist, virtualDepth, margin, stretch, imageAspect: null, fadeIn: false };
+    this.backdropLayers.push(layer);
+    return layer;
+  }
+
+  // Size every layer so it covers the current viewport at its own distance.
+  layoutBackdropLayers() {
+    if (!this.backdropLayers || !this.backdropLayers.length || !this.camera) return;
+
+    const vFov = THREE.MathUtils.degToRad(this.camera.fov);
+    const aspect = this.camera.aspect || window.innerWidth / window.innerHeight;
+
+    for (const layer of this.backdropLayers) {
+      const viewHeight = 2 * Math.tan(vFov / 2) * layer.dist;
+      const viewWidth = viewHeight * aspect;
+
+      if (layer.stretch || !layer.imageAspect) {
+        // Soft painted layers just fill the frame (stretching is invisible).
+        layer.mesh.scale.set(viewWidth * layer.margin, viewHeight * layer.margin, 1);
+      } else {
+        // The photo keeps its own aspect ratio while covering the viewport
+        // (same idea as CSS `background-size: cover`).
+        const k = Math.max((viewWidth * layer.margin) / layer.imageAspect, viewHeight * layer.margin);
+        layer.mesh.scale.set(layer.imageAspect * k, k, 1);
+      }
+    }
+  }
+
+  // Slide each layer a different fraction of the camera movement -> parallax.
+  updateBackdropParallax(dt) {
+    if (!this.backdropRig || !this.backdropLayers.length || !this.backdropHomePos) return;
+
+    const cam = this.camera;
+    cam.updateMatrixWorld();
+    this._bdDelta.copy(cam.position).sub(this.backdropHomePos);
+    this._bdRight.setFromMatrixColumn(cam.matrixWorld, 0).normalize();
+    this._bdUp.setFromMatrixColumn(cam.matrixWorld, 1).normalize();
+    const dx = this._bdDelta.dot(this._bdRight);
+    const dy = this._bdDelta.dot(this._bdUp);
+
+    for (const layer of this.backdropLayers) {
+      // Nearer layers move more; far layers barely drift.
+      const k = layer.dist / layer.virtualDepth;
+      layer.mesh.position.x = -dx * k;
+      layer.mesh.position.y = -dy * k;
+
+      if (layer.fadeIn) {
+        const mat = layer.mesh.material;
+        mat.opacity = Math.min(1, mat.opacity + dt * 0.9);
+        if (mat.opacity >= 1) layer.fadeIn = false;
+      }
+    }
+  }
+
+  loadBackdropPhoto() {
+    const tryLoad = (urls) => {
       const url = urls.shift();
       if (!url) return;
-      this.bgTextureLoader.load(url, applyTexture, undefined, () => loadNext(urls));
-    };
-    loadNext(['./assets/underwater-bg.jpg', './assets/underwater-bg.png']);
-  }
 
-  // CSS `background-size: cover` math for a three.js fullscreen background texture.
-  fitBackdropToViewport() {
-    const tex = this.backdropTexture;
-    if (!tex || !tex.image || !this.renderer) return;
+      this.bgTextureLoader.load(
+        url,
+        (tex) => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          const layer = this.backdropPhotoLayer;
+          if (!layer) return;
 
-    const imgW = tex.image.width || 16;
-    const imgH = tex.image.height || 9;
-    const canvas = this.renderer.domElement;
-    const viewW = canvas.clientWidth || window.innerWidth || imgW;
-    const viewH = canvas.clientHeight || window.innerHeight || imgH;
-
-    const imgAspect = imgW / imgH;
-    const viewAspect = viewW / viewH;
-
-    let uSpan = 1;
-    let vSpan = 1;
-    if (viewAspect > imgAspect) {
-      // Viewport is wider than the artwork -> fill width, crop top & bottom.
-      vSpan = imgAspect / viewAspect;
-    } else {
-      // Viewport is taller (phones) -> fill height, crop left & right.
-      uSpan = viewAspect / imgAspect;
-    }
-
-    tex.repeat.set(uSpan, vSpan);
-    tex.offset.set((1 - uSpan) / 2, (1 - vSpan) / 2);
-  }
-
-  buildEnvironment() {
-    // 1. Deep Ocean Gradient Backdrop Dome
-    const bgCanvas = document.createElement('canvas');
-    bgCanvas.width = 64;
-    bgCanvas.height = 512;
-    const bctx = bgCanvas.getContext('2d');
-    const bgGrad = bctx.createLinearGradient(0, 0, 0, 512);
-    bgGrad.addColorStop(0.0, '#1696c8');
-    bgGrad.addColorStop(0.28, '#0a5b8c');
-    bgGrad.addColorStop(0.68, '#052c54');
-    bgGrad.addColorStop(1.0, '#021329');
-    bctx.fillStyle = bgGrad;
-    bctx.fillRect(0, 0, 64, 512);
-    const bgTex = new THREE.CanvasTexture(bgCanvas);
-    bgTex.colorSpace = THREE.SRGBColorSpace;
-
-    const backdrop = new THREE.Mesh(
-      new THREE.SphereGeometry(52, 32, 24),
-      new THREE.MeshBasicMaterial({
-        map: bgTex,
-        side: THREE.BackSide,
-        fog: false,
-        transparent: true,
-        depthWrite: false
-      })
-    );
-    // Fallback only: as soon as assets/underwater-bg.jpg is ready, the photo
-    // becomes the scene background and this gradient dome fades away.
-    backdrop.name = 'underwater-gradient-fallback';
-    this.backdropDome = backdrop;
-    this.backdropFade = null;
-    backdrop.visible = !this.backdropTexture;
-    this.scene.add(backdrop);
-
-    // 2. Shimmering Water Surface above
-    const surfGeom = new THREE.PlaneGeometry(60, 38, 36, 24);
-    surfGeom.rotateX(Math.PI / 2);
-    const surfMat = new THREE.MeshStandardMaterial({
-      color: 0x5ce1e6,
-      emissive: 0x168aad,
-      emissiveIntensity: 0.45,
-      transparent: true,
-      opacity: 0.36,
-      roughness: 0.15,
-      side: THREE.DoubleSide
-    });
-    this.waterSurface = new THREE.Mesh(surfGeom, surfMat);
-    this.waterSurface.position.y = 7.2;
-    this.scene.add(this.waterSurface);
-
-    // 3. Animated Caustics Sandy Seabed
-    this.causticsCanvas = document.createElement('canvas');
-    this.causticsCanvas.width = 256;
-    this.causticsCanvas.height = 256;
-    this.causticsTexture = new THREE.CanvasTexture(this.causticsCanvas);
-    this.causticsTexture.wrapS = THREE.RepeatWrapping;
-    this.causticsTexture.wrapT = THREE.RepeatWrapping;
-    this.causticsTexture.repeat.set(5, 3);
-    this.updateCausticsCanvas(0);
-
-    const floorGeom = new THREE.PlaneGeometry(54, 34, 64, 40);
-    floorGeom.rotateX(-Math.PI / 2);
-    const fPos = floorGeom.attributes.position;
-    for (let i = 0; i < fPos.count; i++) {
-      const x = fPos.getX(i);
-      const z = fPos.getZ(i);
-      const dune = Math.sin(x * 0.28) * 0.38 + Math.cos(z * 0.36) * 0.32 + (z < -4 ? (-z - 4) * 0.18 : 0);
-      fPos.setY(i, dune);
-    }
-    floorGeom.computeVertexNormals();
-
-    const floorMat = new THREE.MeshStandardMaterial({
-      color: 0xd9be93,
-      emissive: 0x38bdf8,
-      emissiveMap: this.causticsTexture,
-      emissiveIntensity: 0.32,
-      roughness: 0.88
-    });
-    const seabed = new THREE.Mesh(floorGeom, floorMat);
-    seabed.position.y = -5.6;
-    seabed.visible = ENVIRONMENT_CONFIG.showBuiltInSandFloor !== false;
-    this.defaultSandFloor = seabed;
-    this.scene.add(seabed);
-
-    // 4. Volumetric Sunlight God Rays
-    const rayCanvas = document.createElement('canvas');
-    rayCanvas.width = 64;
-    rayCanvas.height = 256;
-    const rctx = rayCanvas.getContext('2d');
-    const rg = rctx.createLinearGradient(0, 0, 0, 256);
-    rg.addColorStop(0, 'rgba(180, 248, 255, 0.28)');
-    rg.addColorStop(0.55, 'rgba(110, 225, 250, 0.09)');
-    rg.addColorStop(1, 'rgba(56, 189, 248, 0)');
-    rctx.fillStyle = rg;
-    rctx.fillRect(0, 0, 64, 256);
-    const rayTex = new THREE.CanvasTexture(rayCanvas);
-
-    for (let i = 0; i < 7; i++) {
-      const topR = 0.7 + Math.random() * 0.7;
-      const botR = 2.2 + Math.random() * 1.4;
-      const rayGeom = new THREE.CylinderGeometry(topR, botR, 15, 16, 1, true);
-      const rayMat = new THREE.MeshBasicMaterial({
-        map: rayTex,
-        transparent: true,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-        side: THREE.DoubleSide
-      });
-      const ray = new THREE.Mesh(rayGeom, rayMat);
-      ray.position.set(-12 + i * 4.2, 0.8, -3.5 - (i % 3) * 1.8);
-      ray.rotation.z = -0.22 + (i % 2) * 0.08;
-      this.scene.add(ray);
-      this.godRays.push({ mesh: ray, baseX: ray.position.x, phase: i * 1.1 });
-    }
-
-    // 5. Lush 3D Coral Reef Clusters, Rocks & Swaying Kelp Forest
-    this.buildCoralReefs();
-
-    // 6. Rising Ambient 3D Bubbles + Floating Plankton
-    this.buildAmbientBubbles();
-  }
-
-  updateCausticsCanvas(time) {
-    const ctx = this.causticsCanvas.getContext('2d');
-    ctx.fillStyle = '#031526';
-    ctx.fillRect(0, 0, 256, 256);
-    ctx.globalCompositeOperation = 'lighter';
-    ctx.strokeStyle = 'rgba(110, 235, 255, 0.28)';
-    ctx.lineWidth = 3;
-
-    for (let i = 0; i < 14; i++) {
-      ctx.beginPath();
-      const yBase = (i / 14) * 256;
-      for (let x = 0; x <= 256; x += 16) {
-        const y =
-          (yBase +
-            Math.sin(x * 0.05 + time * 1.8 + i) * 18 +
-            Math.cos(x * 0.03 - time * 1.3 + i * 2) * 14 +
-            256) %
-          256;
-        if (x === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
-    }
-    ctx.globalCompositeOperation = 'source-over';
-    this.causticsTexture.needsUpdate = true;
-  }
-
-  buildCoralReefs() {
-    this.defaultReefGroup = new THREE.Group();
-    this.defaultReefGroup.visible = ENVIRONMENT_CONFIG.showBuiltInRocksAndCorals !== false;
-    this.scene.add(this.defaultReefGroup);
-
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x334e68, roughness: 0.92, flatShading: true });
-    const coralPalette = [0xff5d8f, 0xff85a1, 0xff9e00, 0x00f5d4, 0x9b5de5, 0xf15bb5, 0xfee440];
-
-    const reefSpots = [
-      [-10.5, -5.2, -2.5, 1.3],
-      [-6.2, -5.3, -4.2, 1.0],
-      [0.4, -5.5, -5.2, 1.4],
-      [6.8, -5.3, -3.5, 1.15],
-      [10.8, -5.1, -2.0, 1.25],
-      [-12.2, -5.2, 1.2, 0.85],
-      [12.2, -5.2, 1.0, 0.9]
-    ];
-
-    reefSpots.forEach(([rx, ry, rz, s], idx) => {
-      const cluster = new THREE.Group();
-      cluster.position.set(rx, ry, rz);
-
-      // Base rocks
-      for (let r = 0; r < 3; r++) {
-        const rock = new THREE.Mesh(new THREE.DodecahedronGeometry((1.2 + r * 0.35) * s, 1), rockMat);
-        rock.position.set((r - 1) * 0.9 * s, 0.2, (r % 2) * 0.6);
-        rock.scale.set(1.3, 0.68, 1.1);
-        rock.rotation.set(r, r * 1.2, 0);
-        cluster.add(rock);
-      }
-
-      // Brain coral / glowing anemone dome
-      const cColor1 = coralPalette[idx % coralPalette.length];
-      const dome = new THREE.Mesh(
-        new THREE.SphereGeometry(0.75 * s, 18, 14),
-        new THREE.MeshStandardMaterial({
-          color: cColor1,
-          emissive: cColor1,
-          emissiveIntensity: 0.18,
-          roughness: 0.55
-        })
+          const img = tex.image || {};
+          layer.mesh.material.map = tex;
+          layer.mesh.material.opacity = 0;
+          layer.mesh.material.needsUpdate = true;
+          layer.imageAspect = img.width && img.height ? img.width / img.height : 16 / 9;
+          layer.fadeIn = true;
+          this.layoutBackdropLayers();
+        },
+        undefined,
+        () => {
+          // JPG missing -> PNG fallback -> painted gradient stays visible.
+          tryLoad(urls);
+        }
       );
-      dome.position.set(-0.3 * s, 0.65 * s, 0.3);
-      dome.scale.set(1.1, 0.82, 1.1);
-      cluster.add(dome);
+    };
 
-      // Branching Staghorn Coral tubes
-      const cColor2 = coralPalette[(idx + 2) % coralPalette.length];
-      const branchMat = new THREE.MeshStandardMaterial({
-        color: cColor2,
-        emissive: cColor2,
-        emissiveIntensity: 0.16,
-        roughness: 0.45
-      });
-      for (let b = 0; b < 5; b++) {
-        const h = (1.1 + (b % 3) * 0.45) * s;
-        const cyl = new THREE.Mesh(new THREE.CapsuleGeometry(0.11 * s, h, 4, 8), branchMat);
-        const ang = (b / 5) * Math.PI * 2;
-        cyl.position.set(0.45 * s + Math.cos(ang) * 0.35, h * 0.5 + 0.3, Math.sin(ang) * 0.35);
-        cyl.rotation.z = Math.cos(ang) * 0.38;
-        cyl.rotation.x = Math.sin(ang) * 0.38;
-        cluster.add(cyl);
+    tryLoad(['./assets/underwater-bg.jpg', './assets/underwater-bg.png']);
+  }
+
+  // --------------------------------------------------------------------------
+  // Procedural painted textures for the parallax layers
+  // --------------------------------------------------------------------------
+  createBackdropGradientTexture() {
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 512;
+    const ctx = canvas.getContext('2d');
+    const grad = ctx.createLinearGradient(0, 0, 0, 512);
+    grad.addColorStop(0.0, '#1696c8');
+    grad.addColorStop(0.28, '#0a5b8c');
+    grad.addColorStop(0.68, '#052c54');
+    grad.addColorStop(1.0, '#021329');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 64, 512);
+
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  makeSeededRandom(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  blurCanvasTexture(sourceCanvas, radius) {
+    let out = sourceCanvas;
+    try {
+      const blurred = document.createElement('canvas');
+      blurred.width = sourceCanvas.width;
+      blurred.height = sourceCanvas.height;
+      const ctx = blurred.getContext('2d');
+      ctx.filter = `blur(${radius}px)`;
+      ctx.drawImage(sourceCanvas, 0, 0);
+      out = blurred;
+    } catch (e) {
+      out = sourceCanvas;
+    }
+    const tex = new THREE.CanvasTexture(out);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  // A single soft, wavy plant blade (silhouette used for the painted layers).
+  drawSilhouetteKelp(ctx, x, baseY, height, width, color, phase, lean) {
+    const left = [];
+    const right = [];
+    const steps = 18;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const y = baseY - height * t;
+      // gentle S-curve so the blade looks like flowing kelp, not a stick
+      const sway = Math.sin(t * 2.3 + phase) * width * 1.15 * t + lean * t * t;
+      const halfW = Math.max(1.5, width * Math.pow(1 - t, 0.5));
+      left.push([x + sway - halfW, y]);
+      right.push([x + sway + halfW * 0.86, y]);
+    }
+    ctx.beginPath();
+    left.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+    for (let i = right.length - 1; i >= 0; i--) ctx.lineTo(right[i][0], right[i][1]);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  // A leafy plant cluster: a few broad blades fanning out of one spot.
+  drawSilhouettePlantCluster(ctx, x, baseY, height, spread, color, rand, leafHalfWidth = 42, leafJitter = 18) {
+    const blades = 4 + Math.floor(rand() * 3);
+    for (let i = 0; i < blades; i++) {
+      const bladeHeight = height * (0.68 + rand() * 0.5);
+      const bladeHalfWidth = leafHalfWidth * (0.7 + rand()) + rand() * leafJitter;
+      this.drawSilhouetteKelp(
+        ctx,
+        x + (rand() - 0.5) * spread,
+        baseY,
+        bladeHeight,
+        bladeHalfWidth,
+        color,
+        rand() * Math.PI * 2,
+        (rand() - 0.5) * height * 0.28
+      );
+    }
+  }
+
+  createMidgroundSilhouetteTexture() {
+    const W = 2048;
+    const H = 768;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    const rand = this.makeSeededRandom(20261116);
+
+    // Hazy distant rock ridges
+    const drawRidge = (baseY, amp, color, seed) => {
+      ctx.beginPath();
+      ctx.moveTo(0, H);
+      for (let x = 0; x <= W; x += 24) {
+        const y =
+          baseY -
+          Math.sin(x * 0.0031 + seed) * amp * 0.55 -
+          Math.sin(x * 0.0107 + seed * 2.3) * amp * 0.3 -
+          Math.sin(x * 0.0203 + seed * 4.1) * amp * 0.15;
+        ctx.lineTo(x, y);
       }
+      ctx.lineTo(W, H);
+      ctx.closePath();
+      ctx.fillStyle = color;
+      ctx.fill();
+    };
+    drawRidge(H * 0.8, 95, 'rgba(24, 104, 142, 0.3)', 1.1);
+    drawRidge(H * 0.89, 80, 'rgba(17, 82, 120, 0.38)', 3.3);
+    drawRidge(H * 0.98, 60, 'rgba(12, 62, 96, 0.5)', 5.7);
 
-      this.defaultReefGroup.add(cluster);
-    });
+    // Bluish, hazy planted background — reads as "deep in the tank"
+    const haze = ['rgba(38, 132, 168, 0.34)', 'rgba(29, 112, 148, 0.4)', 'rgba(22, 92, 126, 0.46)'];
+    for (let i = 0; i < 16; i++) {
+      const x = W * (0.02 + 0.96 * (i / 15)) + (rand() - 0.5) * 80;
+      this.drawSilhouettePlantCluster(ctx, x, H * 1.0, H * (0.42 + rand() * 0.2), 110, haze[i % 3], rand);
+    }
 
-    // Swaying Kelp Seaweed Forest
-    this.defaultKelpGroup = new THREE.Group();
-    this.defaultKelpGroup.visible = ENVIRONMENT_CONFIG.showBuiltInKelpPlants !== false;
-    this.scene.add(this.defaultKelpGroup);
+    return this.blurCanvasTexture(canvas, 4);
+  }
 
-    const kelpMat = new THREE.MeshStandardMaterial({
-      color: 0x2ec4b6,
-      emissive: 0x0b525b,
-      emissiveIntensity: 0.25,
-      roughness: 0.5,
-      side: THREE.DoubleSide
-    });
+  createForegroundKelpTexture() {
+    const W = 2048;
+    const H = 1024;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    const rand = this.makeSeededRandom(777123);
+    const color = 'rgba(5, 38, 52, 0.9)';
 
-    const kelpLocations = [
-      [-13.2, -2.5], [-12.6, -3.2], [-8.8, -5.2], [-3.5, -5.8],
-      [3.8, -5.6], [9.2, -4.8], [13.0, -2.8], [12.4, -3.6]
+    // Out-of-focus plants hugging the left & right edges only — the centre
+    // stage stays clear for the fish. These slide the most while orbiting.
+    const edgeSpots = [
+      [W * 0.005, 1.0],
+      [W * 0.055, 0.82],
+      [W * 0.115, 0.66],
+      [W * 0.995, 1.0],
+      [W * 0.945, 0.82],
+      [W * 0.885, 0.66]
     ];
+    for (const [x, scale] of edgeSpots) {
+      this.drawSilhouettePlantCluster(
+        ctx,
+        x,
+        H * 1.03,
+        H * 0.52 * scale,
+        70,
+        color,
+        rand,
+        34 * scale,
+        16
+      );
+    }
 
-    kelpLocations.forEach(([kx, kz], idx) => {
-      for (let strand = 0; strand < 3; strand++) {
-        const height = 3.2 + Math.random() * 2.6;
-        const geom = new THREE.PlaneGeometry(0.32, height, 2, 14);
-        geom.translate(0, height / 2, 0);
-        const base = geom.attributes.position.array.slice();
-        const mesh = new THREE.Mesh(geom, kelpMat);
-        mesh.position.set(kx + (strand - 1) * 0.4, -5.6, kz + (strand % 2) * 0.35);
-        mesh.rotation.y = strand * 0.8;
-        this.defaultKelpGroup.add(mesh);
-        this.kelpBlades.push({ mesh, base, height, phase: idx + strand * 1.3 });
-      }
-    });
+    return this.blurCanvasTexture(canvas, 9);
   }
 
   // ==========================================================================
@@ -1393,15 +1430,8 @@ class DigitalAquariumApp {
 
     this.controls.update();
 
-    // Smooth dissolve from the gradient loading dome to the underwater photo
-    if (this.backdropFade !== null && this.backdropDome) {
-      this.backdropFade = Math.max(0, this.backdropFade - dt * 1.6);
-      this.backdropDome.material.opacity = this.backdropFade;
-      if (this.backdropFade === 0) {
-        this.backdropDome.visible = false;
-        this.backdropFade = null;
-      }
-    }
+    // Parallax backdrop follows the camera (photo drifts, kelp layers slide)
+    this.updateBackdropParallax(dt);
 
     this.plantSwayUniform.value = elapsed;
     for (const mixer of this.gltfMixers) {
@@ -1491,7 +1521,18 @@ class DigitalAquariumApp {
       this.stepCreatureAI(actor, dt, elapsed);
     }
 
-    this.renderer.render(this.scene, this.camera);
+    // Pass 1: parallax underwater backdrop (clears + paints the background)
+    // Pass 2: the 3D tank on top of it, without clearing again.
+    if (this.backdropScene) {
+      this.renderer.autoClear = true;
+      this.renderer.render(this.backdropScene, this.camera);
+      this.renderer.autoClear = false;
+      this.renderer.clearDepth();
+      this.renderer.render(this.scene, this.camera);
+      this.renderer.autoClear = true;
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   stepCreatureAI(actor, dt, elapsed) {
