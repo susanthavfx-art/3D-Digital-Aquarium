@@ -1778,15 +1778,34 @@ function buildSeahorseParts(THREE, mat) {
 // ============================================================================
 
 export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
+  // ---------------------------------------------------------------------------
+  // SMOOTH INTEGRATED ANIMATION CLOCK (fixes "suddenly spinning / speeding up" twitches)
+  // ---------------------------------------------------------------------------
+  // The wave maths used to be Math.sin(time * FREQ * speedBoost) with `time` being an ever
+  // growing absolute clock. speedBoost changes constantly (idle ~0.45 -> food chase 1.65+),
+  // so every change multiplied a huge number and teleported the wave phase: fins, tails and
+  // limbs snapped to random positions (worst on the seahorse dorsal fin, which ran at 16.5x).
+  // We now integrate the (ramped) speed into a clock, so only the RATE changes and the wave
+  // stays perfectly continuous.
+  const prevClockTime = meshGroup.userData.animClockTime;
+  const dt = typeof prevClockTime === 'number' ? Math.min(Math.max(time - prevClockTime, 0), 0.1) : 0.016;
+  meshGroup.userData.animClockTime = time;
+
+  const wantedSpeed = Math.max(0.25, Math.min(2.2, speedBoost));
+  const prevSpeed = typeof meshGroup.userData.animSpeed === 'number' ? meshGroup.userData.animSpeed : wantedSpeed;
+  const animSpeed = prevSpeed + (wantedSpeed - prevSpeed) * Math.min(1, dt * 6);
+  meshGroup.userData.animSpeed = animSpeed;
+
+  // animation clock advances faster while chasing food / fleeing, slower while idling
+  const clock = (meshGroup.userData.animClock || 0) + dt * animSpeed;
+  meshGroup.userData.animClock = clock;
+
   // 1. Custom Blender .GLB creature animation (skeletal AnimationMixer or gentle procedural wave)
   if (meshGroup.userData.isCustomGlb) {
     if (meshGroup.userData.mixer) {
-      const last = meshGroup.userData.lastAnimTime;
-      const dt = last === null ? 0.016 : Math.min(Math.max(time - last, 0), 0.1);
-      meshGroup.userData.lastAnimTime = time;
-      // playback rate = per-species tempo * live swim speed boost (idle = slow flutter, chase/startle = fast)
+      // playback rate = per-species tempo * ramped swim speed (idle = slow flutter, chase = fast)
       const clipSpeed = meshGroup.userData.clipSpeed || 1.0;
-      meshGroup.userData.mixer.update(dt * speedBoost * clipSpeed);
+      meshGroup.userData.mixer.update(dt * animSpeed * clipSpeed);
     }
     const waveMeshes = meshGroup.userData.animParts?.waveMeshes;
     if (waveMeshes && waveMeshes.length > 0) {
@@ -1798,11 +1817,11 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
         const arr = pos.array;
 
         if (swimStyle === 'fish') {
-          const freq = (meshGroup.userData.species === 'angelfish' ? 5.6 : 6.8) * speedBoost;
+          const freq = meshGroup.userData.species === 'angelfish' ? 5.6 : 6.8; // speed is in `clock`
           for (let i = 0, k = 0; i < base.length; i += 4, k += 3) {
             const u = base[i + 3]; // 0 at nose -> 1 at tail tip
             const tailFlex = Math.pow(u, 1.85);
-            const w = Math.sin(time * freq - u * 4.6) * amp * tailFlex;
+            const w = Math.sin(clock * freq - u * 4.6) * amp * tailFlex;
             arr[k] = base[i];
             arr[k + 1] = base[i + 1];
             arr[k + 2] = base[i + 2] + w;
@@ -1813,13 +1832,13 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
             if (code >= 10.0) {
               // Rapid fluttering back fan dorsal fin!
               const finSpan = code - 10.0;
-              const flutter = Math.sin(time * 16.5 * speedBoost - finSpan * 2.5) * (amp * 0.85) * finSpan;
+              const flutter = Math.sin(clock * 16.5 - finSpan * 2.5) * (amp * 0.85) * finSpan;
               arr[k] = base[i];
               arr[k + 1] = base[i + 1];
               arr[k + 2] = base[i + 2] + flutter;
             } else {
               const tailFlex = Math.pow(code, 1.6);
-              const sway = Math.sin(time * 3.6 * speedBoost - code * 3.8) * (amp * 0.65) * tailFlex;
+              const sway = Math.sin(clock * 3.6 - code * 3.8) * (amp * 0.65) * tailFlex;
               arr[k] = base[i];
               arr[k + 1] = base[i + 1];
               arr[k + 2] = base[i + 2] + sway;
@@ -1832,7 +1851,7 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
             const by = base[i + 1];
             const rNorm = base[i + 3];
             const ang = Math.atan2(by, bx);
-            const curl = Math.sin(time * 2.3 + ang * 2.5) * (amp * 0.72) * Math.pow(rNorm, 1.5);
+            const curl = Math.sin(clock * 2.3 + ang * 2.5) * (amp * 0.72) * Math.pow(rNorm, 1.5);
             arr[k] = bx;
             arr[k + 1] = by;
             arr[k + 2] = base[i + 2] + curl;
@@ -1853,7 +1872,7 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
       const base = spine.geometry.userData.basePositions;
       const pos = spine.geometry.attributes.position;
       const arr = pos.array;
-      const freq = (species === 'clownfish' ? 7.2 : 5.6) * speedBoost;
+      const freq = species === 'clownfish' ? 7.2 : 5.6; // speed is in `clock`
       const amp = species === 'clownfish' ? 0.28 : 0.24;
 
       for (let i = 0, k = 0; i < base.length; i += 4, k += 3) {
@@ -1862,7 +1881,7 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
         const bz = base[i + 2];
         const uNorm = base[i + 3]; // 0 at nose -> 1 at tail tip
         const tailFlex = Math.pow(uNorm, 1.65);
-        const wave = Math.sin(time * freq - uNorm * 4.6) * amp * tailFlex;
+        const wave = Math.sin(clock * freq - uNorm * 4.6) * amp * tailFlex;
         arr[k] = bx;
         arr[k + 1] = by;
         arr[k + 2] = bz + wave;
@@ -1870,13 +1889,13 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
       pos.needsUpdate = true;
     }
     if (parts.pecL && parts.pecR) {
-      const flap = Math.sin(time * 9.5 * speedBoost) * 0.42;
+      const flap = Math.sin(clock * 9.5) * 0.42;
       parts.pecL.rotation.y = -0.28 + flap;
       parts.pecR.rotation.y = 0.28 - flap;
     }
   } else if (species === 'turtle') {
-    const stroke = Math.sin(time * 3.1 * speedBoost);
-    const twist = Math.cos(time * 3.1 * speedBoost);
+    const stroke = Math.sin(clock * 3.1);
+    const twist = Math.cos(clock * 3.1);
     if (parts.flFrontL && parts.flFrontR) {
       parts.flFrontL.rotation.x = -stroke * 0.52;
       parts.flFrontL.rotation.z = twist * 0.18;
@@ -1884,14 +1903,14 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
       parts.flFrontR.rotation.z = twist * 0.18;
     }
     if (parts.flRearL && parts.flRearR) {
-      parts.flRearL.rotation.y = Math.sin(time * 2.6) * 0.22;
-      parts.flRearR.rotation.y = -Math.sin(time * 2.6) * 0.22;
+      parts.flRearL.rotation.y = Math.sin(clock * 2.6) * 0.22;
+      parts.flRearR.rotation.y = -Math.sin(clock * 2.6) * 0.22;
     }
     if (parts.headPivot) {
-      parts.headPivot.rotation.z = Math.sin(time * 1.8) * 0.08;
+      parts.headPivot.rotation.z = Math.sin(clock * 1.8) * 0.08;
     }
   } else if (species === 'jellyfish') {
-    const pulse = Math.sin(time * 2.8 * speedBoost);
+    const pulse = Math.sin(clock * 2.8);
     if (parts.bellMesh && parts.bellMesh.geometry.userData.basePositions) {
       const base = parts.bellMesh.geometry.userData.basePositions;
       const pos = parts.bellMesh.geometry.attributes.position;
@@ -1920,8 +1939,8 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
           const by = base[i + 1];
           const bz = base[i + 2];
           const v = base[i + 3];
-          const swayZ = Math.sin(time * 3.0 - v * 4.2 + phase) * 0.22 * v;
-          const swayX = Math.cos(time * 2.3 - v * 3.4 + phase) * 0.10 * v;
+          const swayZ = Math.sin(clock * 3.0 - v * 4.2 + phase) * 0.22 * v;
+          const swayX = Math.cos(clock * 2.3 - v * 3.4 + phase) * 0.10 * v;
           arr[k] = bx + swayX;
           arr[k + 1] = by * (1 + pulse * 0.08);
           arr[k + 2] = bz + swayZ;
@@ -1940,7 +1959,7 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
         const bz = base[i + 2];
         const rNorm = base[i + 3];
         const angle = Math.atan2(by, bx);
-        const curl = Math.sin(time * 2.4 + angle * 2.5) * 0.12 * Math.pow(rNorm, 1.6);
+        const curl = Math.sin(clock * 2.4 + angle * 2.5) * 0.12 * Math.pow(rNorm, 1.6);
         arr[k] = bx;
         arr[k + 1] = by;
         arr[k + 2] = bz + curl;
@@ -1950,7 +1969,7 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
   } else if (species === 'seahorse') {
     // Rapid fluttering dorsal fin + gentle S-spine & spiral tail curl!
     if (parts.dorsalPivot) {
-      parts.dorsalPivot.rotation.y = Math.sin(time * 16.0 * speedBoost) * 0.36;
+      parts.dorsalPivot.rotation.y = Math.sin(clock * 16.0) * 0.36;
     }
     if (parts.bodyMesh && parts.bodyMesh.geometry.userData.basePositions) {
       const base = parts.bodyMesh.geometry.userData.basePositions;
@@ -1962,8 +1981,8 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
         const bz = base[i + 2];
         const t = base[i + 3];
         const tailFlex = Math.pow(t, 1.5);
-        const swayZ = Math.sin(time * 3.8 * speedBoost - t * 3.8) * 0.16 * tailFlex;
-        const curlX = Math.cos(time * 2.4 - t * 2.6) * 0.07 * Math.max(0, t - 0.55);
+        const swayZ = Math.sin(clock * 3.8 - t * 3.8) * 0.16 * tailFlex;
+        const curlX = Math.cos(clock * 2.4 - t * 2.6) * 0.07 * Math.max(0, t - 0.55);
         arr[k] = bx + curlX;
         arr[k + 1] = by;
         arr[k + 2] = bz + swayZ;
@@ -1979,7 +1998,7 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
       const uNorm = base[i + 3];
       arr[k] = base[i];
       arr[k + 1] = base[i + 1];
-      arr[k + 2] = base[i + 2] + Math.sin(time * 6.5 * speedBoost - uNorm * 4.4) * 0.25 * Math.pow(uNorm, 1.6);
+      arr[k + 2] = base[i + 2] + Math.sin(clock * 6.5 - uNorm * 4.4) * 0.25 * Math.pow(uNorm, 1.6);
     }
     pos.needsUpdate = true;
   }

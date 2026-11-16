@@ -1764,6 +1764,27 @@ class DigitalAquariumApp {
     }
   }
 
+  // Velocity direction becomes pure noise when a creature almost stops: atan2 flips by
+  // 180 degrees between frames and the model visibly spins. Freeze the heading while the
+  // creature is hovering and ease towards the new heading otherwise (no more snap turns).
+  stableYaw(actor, dt) {
+    const horiz = Math.hypot(actor.vel.x, actor.vel.z);
+    const raw = Math.atan2(-actor.vel.z, actor.vel.x);
+    const prev = actor.lastYaw;
+    if (typeof prev !== 'number') {
+      actor.lastYaw = raw;
+      return raw;
+    }
+    if (horiz < 0.22) return prev;
+
+    let delta = raw - prev;
+    while (delta > Math.PI) delta -= Math.PI * 2;
+    while (delta < -Math.PI) delta += Math.PI * 2;
+    const yaw = prev + delta * Math.min(1, dt * 7);
+    actor.lastYaw = yaw;
+    return yaw;
+  }
+
   stepCreatureAI(actor, dt, elapsed) {
     const sp = actor.species;
 
@@ -1864,7 +1885,7 @@ class DigitalAquariumApp {
       actor.pos.z = Math.max(TANK_BOUNDS.zMin, Math.min(TANK_BOUNDS.zMax, actor.pos.z));
       actor.root.position.copy(actor.pos);
 
-      const yaw = Math.atan2(-actor.vel.z, actor.vel.x);
+      const yaw = this.stableYaw(actor, dt);
       actor.meshGroup.rotation.order = 'YXZ';
       actor.meshGroup.rotation.y = yaw;
       actor.meshGroup.rotation.z = -0.10 + Math.sin((elapsed + actor.phase) * 2.2) * 0.08;
@@ -1893,7 +1914,7 @@ class DigitalAquariumApp {
       actor.root.position.copy(actor.pos);
 
       const horizLen = Math.hypot(actor.vel.x, actor.vel.z) || 0.001;
-      const yaw = Math.atan2(-actor.vel.z, actor.vel.x);
+      const yaw = this.stableYaw(actor, dt);
       const pitch = Math.atan2(actor.vel.y, horizLen) * 0.55;
       actor.meshGroup.rotation.order = 'YXZ';
       actor.meshGroup.rotation.y = yaw;
