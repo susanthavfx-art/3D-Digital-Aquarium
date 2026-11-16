@@ -12,6 +12,10 @@
 // The new Blender exports (My_clownfish / My_bluetang) come out of Blender with the
 // nose on -Z, so they need -90. Fixed here in code instead of inside Blender.
 // clipSpeed = multiplier for the embedded Blender animation clip rate (<1 = calmer).
+// flatLight = true -> "paper cut-out" model. These Blender exports have inconsistent normals /
+//   triangle winding, so tank lighting leaves one whole side dark green. Such species are drawn
+//   unlit (texture as-is + distance fog) so the crayon colours stay even on both sides.
+// flatLightTint = optional colour multiplier while drawing unlit (default 0xe8f4ff, cool water).
 
 export const CREATURE_OVERRIDES = {
   clownfish: {
@@ -24,7 +28,8 @@ export const CREATURE_OVERRIDES = {
     targetSize: 2.55,
     swimStyle: 'fish',
     autoSwimWave: true,
-    clipSpeed: 1.0
+    clipSpeed: 1.0,
+    flatLight: true // paper cut-out rig: draw unlit so both halves keep the crayon colour
   },
   angelfish: {
     glbUrl: './models/creatures/My_AngleFish.glb',
@@ -44,7 +49,8 @@ export const CREATURE_OVERRIDES = {
     targetSize: 2.50,
     swimStyle: 'fish',
     autoSwimWave: true,
-    clipSpeed: 1.0
+    clipSpeed: 1.0,
+    flatLight: true // paper cut-out rig: draw unlit so both halves keep the crayon colour
   },
   seahorse: {
     glbUrl: './models/creatures/seahorse.glb',
@@ -76,7 +82,8 @@ export const CREATURE_OVERRIDES = {
     targetSize: 1.85,
     swimStyle: 'crab',
     autoSwimWave: true,
-    clipSpeed: 0.55 // lazy crab claw/leg flutter when idle
+    clipSpeed: 0.55, // lazy crab claw/leg flutter when idle
+    flatLight: true // perfectly flat card: draw unlit so the face always shows the full colour
   }
 };
 
