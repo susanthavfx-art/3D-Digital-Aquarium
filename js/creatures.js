@@ -971,17 +971,36 @@ export function buildCustomGlbCreatureMesh(THREE, gltf, species, texture, overri
   const useAutoWave = !hasClips && overrideCfg.autoSwimWave !== false;
 
   const isJelly = species === 'jellyfish';
-  const scannedMat = new THREE.MeshStandardMaterial({
-    map: gltfTex,
-    roughness: isJelly ? 0.25 : 0.48,
-    metalness: 0.04,
-    emissive: isJelly ? new THREE.Color(0x3a1860) : new THREE.Color(0x091826),
-    emissiveMap: gltfTex,
-    emissiveIntensity: isJelly ? 0.34 : 0.14,
-    transparent: isJelly,
-    opacity: isJelly ? 0.93 : 1.0,
-    side: THREE.DoubleSide
-  });
+
+  // ---------------------------------------------------------------------------
+  // PAPER CUT-OUT RENDERING (overrideCfg.flatLight)
+  // ---------------------------------------------------------------------------
+  // The new Blender rigs (clownfish / bluetang / crab) are "paper cut-out" shells whose
+  // stored normals and triangle winding are inconsistent: half of the visible surface ends
+  // up facing away from the tank lights, so it only catches the teal reef glow and turns
+  // dark green while the other half stays bright ("one side looks dark" bug).
+  // flatLight species therefore skip the lighting model and show the crayon texture as-is
+  // (distance fog still applies), so the colours match the printed sheet everywhere.
+  const flatLight = overrideCfg.flatLight === true;
+  const scannedMat = flatLight
+    ? new THREE.MeshBasicMaterial({
+        map: gltfTex,
+        color: new THREE.Color(overrideCfg.flatLightTint ?? 0xe8f4ff),
+        side: THREE.DoubleSide,
+        transparent: isJelly,
+        opacity: isJelly ? 0.93 : 1.0
+      })
+    : new THREE.MeshStandardMaterial({
+        map: gltfTex,
+        roughness: isJelly ? 0.25 : 0.48,
+        metalness: 0.04,
+        emissive: isJelly ? new THREE.Color(0x3a1860) : new THREE.Color(0x091826),
+        emissiveMap: gltfTex,
+        emissiveIntensity: isJelly ? 0.34 : 0.14,
+        transparent: isJelly,
+        opacity: isJelly ? 0.93 : 1.0,
+        side: THREE.DoubleSide
+      });
 
   clonedRoot.traverse((child) => {
     if (!child.isMesh) return;
