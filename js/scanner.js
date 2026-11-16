@@ -25,7 +25,8 @@ const SAMPLE_PALETTES = {
   angelfish: ['#00bbf9', '#fee440', '#ff9f1c', '#ffffff'],
   bluetang: ['#0077b6', '#00b4d8', '#48cae4', '#ffffff'],
   seahorse: ['#ff9f1c', '#ffd166', '#2ec4b6', '#ff5d8f'],
-  starfish: ['#ff6b35', '#fb5607', '#ffbe0b', '#ffffff']
+  starfish: ['#ff6b35', '#fb5607', '#ffbe0b', '#ffffff'],
+  crab: ['#fb5607', '#ff9f1c', '#ffd166', '#ffffff']
 };
 
 class PaperScannerApp {

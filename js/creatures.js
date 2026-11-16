@@ -52,6 +52,15 @@ export const SPECIES_LIST = [
     swimZone: 'reef',
     baseScale: 0.96
   },
+  {
+    id: 'crab',
+    name: 'Crab',
+    sinhala: 'කකුළුවා (Crab)',
+    emoji: '🦀',
+    badgeColor: '#f97316',
+    swimZone: 'reef',
+    baseScale: 0.98
+  },
   ...(Array.isArray(EXTRA_CUSTOM_SPECIES) ? EXTRA_CUSTOM_SPECIES : [])
 ];
 
@@ -1034,6 +1043,8 @@ export function buildCustomGlbCreatureMesh(THREE, gltf, species, texture, overri
     }
     mixer.update(Math.random() * 1.2);
     group.userData.mixer = mixer;
+    // Per-species clip tempo (crabs & bottom dwellers idle slowly, fish at 1.0)
+    group.userData.clipSpeed = overrideCfg.clipSpeed ?? 1.0;
     group.userData.lastAnimTime = null;
   }
 
@@ -1754,7 +1765,9 @@ export function animateCreatureMesh(meshGroup, time, speedBoost = 1.0) {
       const last = meshGroup.userData.lastAnimTime;
       const dt = last === null ? 0.016 : Math.min(Math.max(time - last, 0), 0.1);
       meshGroup.userData.lastAnimTime = time;
-      meshGroup.userData.mixer.update(dt * speedBoost);
+      // playback rate = per-species tempo * live swim speed boost (idle = slow flutter, chase/startle = fast)
+      const clipSpeed = meshGroup.userData.clipSpeed || 1.0;
+      meshGroup.userData.mixer.update(dt * speedBoost * clipSpeed);
     }
     const waveMeshes = meshGroup.userData.animParts?.waveMeshes;
     if (waveMeshes && waveMeshes.length > 0) {

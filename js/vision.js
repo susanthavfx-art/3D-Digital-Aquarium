@@ -22,7 +22,8 @@ const SPECIES_BITS = {
   angelfish: [1, 0, 1, 0, 0, 1],
   bluetang:  [1, 0, 1, 1, 0, 1],
   seahorse:  [1, 1, 1, 0, 0, 1],
-  starfish:  [1, 1, 0, 1, 0, 1]
+  starfish:  [1, 1, 0, 1, 0, 1],
+  crab:      [1, 1, 0, 0, 1, 1]  // kept >=2 bits away from every other code so scans never collide
 };
 
 if (Array.isArray(EXTRA_CUSTOM_SPECIES)) {
